@@ -1,23 +1,45 @@
-function make_cubical_mesh(::Type{T}, Mx::Int, My::Int, Mz::Int, x0, x1) where {T}
+"""
+    make_uniform_hex(::Type{T}, Mx::Int, My::Int, Mz::Int, x0, x1) → Mesh{3, T}
+    make_uniform_hex(::Type{T}, M::Int, x0, x1)                   → Mesh{3, T}
+
+Uniform 3D mesh of axis-aligned hexahedral elements on the cube
+`[x0, x1]³`, with `Mx · My · Mz` (or `M³` for the equal-count
+shorthand) elements. Backed by the skeleton-based build over a single
+`PatchCubic{3, T}` with all six faces tagged as domain boundary
+`1..6` (matching the face index ordering).
+
+Element ordering is column-major over `(mx, my, mz)`:
+
+    e(mx, my, mz) = mx + (my-1)·Mx + (mz-1)·Mx·My
+
+`orientation` is identically zero (axis-aligned, single patch).
+"""
+function make_uniform_hex(::Type{T}, Mx::Int, My::Int, Mz::Int, x0, x1) where {T}
     @assert Mx ≥ 1 && My ≥ 1 && Mz ≥ 1
-    z = zero(T)
-    patch = PatchSpec{T}(Mx, My, Mz, Cubical_3D,
-                          T(x0), T(x1), T(x0), T(x1), T(x0), T(x1),
-                          z, z, z)
+    cubic = PatchCubic{3, T}((Mx, My, Mz),
+                              (T(x0), T(x0), T(x0)),
+                              (T(x1), T(x1), T(x1)))
+    patch = PatchDesc(cubic)
     faces = Matrix{FaceLink}(undef, 6, 1)
     for f in 1:6
         faces[f, 1] = boundary_link(f)
     end
-    skel = SkeletonMesh{T}([patch], faces)
+    skel = SkeletonMesh{3, T}([patch], faces)
     return _skeleton_to_mesh(skel)
 end
 
 # Cubic convenience: equal element count in each direction.
-make_cubical_mesh(::Type{T}, M::Int, x0, x1) where {T} =
-    make_cubical_mesh(T, M, M, M, x0, x1)
+make_uniform_hex(::Type{T}, M::Int, x0, x1) where {T} =
+    make_uniform_hex(T, M, M, M, x0, x1)
+
+# Deprecated aliases. New code should call `make_uniform_hex`.
+Base.@deprecate make_cubical_mesh(::Type{T}, Mx::Int, My::Int, Mz::Int, x0, x1) where {T} (
+    make_uniform_hex(T, Mx, My, Mz, x0, x1))
+Base.@deprecate make_cubical_mesh(::Type{T}, M::Int, x0, x1) where {T} (
+    make_uniform_hex(T, M, x0, x1))
 
 """
-    make_cubed_cube_mesh(::Type{T}, M::Int, R::Real) → HexMesh{T}
+    make_cubed_cube_mesh(::Type{T}, M::Int, R::Real) → Mesh{3, T}
 
 Conforming hex mesh of the cube `[-1, 1]³` built from a "cubed-sphere"
 block topology applied to a cubic domain: one central cubic patch
@@ -104,24 +126,20 @@ function _cubed_cube_skeleton(::Type{T}, M::Int, R::Real) where {T}
     o = one(T)
 
     # Patch 1: inner cube `[-R, R]³`.
-    inner = PatchSpec{T}(M, M, M, Cubical_3D,
-                          -Rv, Rv, -Rv, Rv, -Rv, Rv,
-                          z, z, z)
+    inner = PatchDesc(PatchCubic{3, T}((M, M, M),
+                                         (-Rv, -Rv, -Rv),
+                                         ( Rv,  Rv,  Rv)))
 
     # Patches 2..7: outer wedges in the dir order (+x, -x, +y, -y, +z, -z).
     # All wedges share the parameter ranges `a ∈ [0, 1]`, `b ∈ [-1, 1]`,
-    # `c ∈ [-1, 1]`; the family selects the embedding direction. The
-    # `(R1, R2)` slots hold the inner-cube half-edge and the outer-cube
-    # half-edge (1), used by `_patch_vertex_position` to compute
+    # `c ∈ [-1, 1]`; `dir` selects the embedding direction. `(R1, R2) =
+    # (R, 1)` is used by `_patch_vertex_position` to compute
     # `r(a) = R1 · (R2/R1)^a = R · (1/R)^a`.
-    wedge_families = (WedgePosX_3D, WedgeNegX_3D,
-                      WedgePosY_3D, WedgeNegY_3D,
-                      WedgePosZ_3D, WedgeNegZ_3D)
-    patches = PatchSpec{T}[inner]
-    for fam in wedge_families
-        push!(patches, PatchSpec{T}(L, M, M, fam,
-                                     z, o, -o, o, -o, o,
-                                     z, Rv, o))
+    patches = PatchDesc{3, T}[inner]
+    for dir in 1:6
+        push!(patches, PatchDesc(PatchWedge{3, T}((L, M, M), Int8(dir),
+                                                    z, o, -o, o, -o, o,
+                                                    Rv, o)))
     end
 
     faces = Matrix{FaceLink}(undef, 6, length(patches))
@@ -163,11 +181,11 @@ function _cubed_cube_skeleton(::Type{T}, M::Int, R::Real) where {T}
         end
     end
 
-    return SkeletonMesh{T}(patches, faces)
+    return SkeletonMesh{3, T}(patches, faces)
 end
 
 """
-    make_cubed_cube_mesh(::Type{T}, M::Int, R::Real) → HexMesh{T}
+    make_cubed_cube_mesh(::Type{T}, M::Int, R::Real) → Mesh{3, T}
 
 Conforming hex mesh of the cube `[-1, 1]³` built from a "cubed-sphere"
 block topology applied to a cubic domain: one central cubic patch

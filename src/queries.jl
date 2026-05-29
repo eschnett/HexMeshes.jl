@@ -1,5 +1,66 @@
-# `vertex_coords` table as an 8-tuple of `SVector{3, T}`.
-@inline function element_vertices(mesh::HexMesh{T}, e::Integer) where {T}
+"""
+    default_tol(::Type{T}) → T
+
+Default floating-point slack tolerance used by host-side queries
+(`locate_point`, `locate_patch`, `global_to_patch`, `invert_element_map`)
+to absorb roundoff at element / patch boundaries and to set Newton
+convergence targets. Returns `sqrt(eps(T))`:
+
+* `Float32`  ≈ `3.5e-4`
+* `Float64`  ≈ `1.5e-8`
+* `BigFloat` ≈ `7.5e-39` (with the 256-bit default precision)
+
+`sqrt(eps(T))` is the standard "loose" tolerance: it's reliably
+achievable by quadratically-convergent iterations and conservative
+enough for "is this point inside the patch?" containment checks.
+Override with the `tol` keyword on any individual call.
+
+For `Rational` precisions, arithmetic on axis-aligned (`Cubic`) patches
+is exact and no slack is needed — `default_tol(Rational{...}) = 0`.
+Curvilinear (`Wedge`/`Inflation`/`Shell`) patches use `sqrt` and `^`,
+which type-promote out of `Rational`; only `Cubic` patches are
+expected to work with rational precision.
+"""
+@inline default_tol(::Type{T}) where {T<:Real} = sqrt(eps(T))
+@inline default_tol(::Type{R}) where {R<:Rational} = zero(R)
+
+# ---------------------------------------------------------------------
+# Out-of-patch sentinel used by `global_to_patch` to flag points that
+# lie outside the patch's parameter domain. For floating-point `T` we
+# use `NaN` (the natural choice). For `Rational` `T` there is no `NaN`
+# representation, so we use a negative value outside the valid `[0, 1]`
+# range; `_is_outside` does the matching predicate test. Both helpers
+# are dispatched on the element type to keep the patch-inverse path
+# allocation-free and type-stable.
+
+@inline _outside_xi(::Val{D}, ::Type{T}) where {D, T<:AbstractFloat} =
+    SVector{D, T}(ntuple(_ -> T(NaN), Val(D)))
+@inline _outside_xi(::Val{D}, ::Type{R}) where {D, R<:Rational} =
+    SVector{D, R}(ntuple(_ -> -one(R), Val(D)))
+
+@inline _is_outside(ξ::SVector{D, T}) where {D, T<:AbstractFloat} = isnan(ξ[1])
+@inline _is_outside(ξ::SVector{D, R}) where {D, R<:Rational} = ξ[1] < zero(R)
+
+# Host-side queries for 3D meshes:
+#
+#   * `element_vertices(mesh, e)`   — 8 corner coords as SVectors.
+#   * `locate_point(mesh, p)`        — analytic patch+element location
+#                                      (O(npatches), no Newton, no
+#                                      brute-force scan).
+#   * `invert_element_map(verts, p)` — Newton inversion of the
+#                                      trilinear corner map. Kept for
+#                                      legacy callers; no longer used
+#                                      by `locate_point`.
+#   * `interpolate_field(mesh, xs, u, p)` — driver combining the two.
+
+"""
+    element_vertices(mesh::Mesh{3, T}, e::Integer) → NTuple{8, SVector{3, T}}
+
+Read the 8 corner coordinates of element `e` from `mesh.vertex_coords`
+via `mesh.vertex_idx[:, e]`. Returns an `NTuple{8}` in Gmsh-canonical
+tensor-product order.
+"""
+@inline function element_vertices(mesh::Mesh{3, T}, e::Integer) where {T}
     @inbounds ntuple(v -> begin
         vi = mesh.vertex_idx[v, e]
         SVector{3, T}(mesh.vertex_coords[1, vi],
@@ -8,32 +69,24 @@
     end, Val(8))
 end
 
-# Forward element-corner queries through the `InflatedCubeMesh` wrapper.
-# The trilinear corners are only an approximation of the curved-patch
-# geometry, but match exactly on the inner cube and are good enough for
-# bounding-box reject (`locate_point`) and for plotting.
-@inline function element_vertices(mesh::InflatedCubeMesh{T}, e::Integer) where {T}
-    return element_vertices(mesh.base, e)
-end
-
-
-# ----------------------------------------------------------------------
-# Interpolation from per-element data to arbitrary physical points
-#
-# Used for visualisation and diagnostics. Not optimised: the point-to-
-# element search is `O(Ne)` per query and the inversion of the trilinear
-# map runs a small Newton iteration. Plenty fast for plotting grids of a
-# few thousand points; never call this from a hot inner loop.
-
 """
     invert_element_map(verts, p; tol, maxiter) → (ξ::SVector{3, T}, ok::Bool)
 
-Solve `trilinear_map(verts, ξ, η, ζ) = p` for the reference coordinate
-`(ξ, η, ζ)`. Returns the converged `ξ` and a flag indicating whether the
-residual fell below `tol` within `maxiter` Newton steps.
+Newton-iteration inverse of the trilinear corner map. Solves
+`trilinear_map(verts, ξ, η, ζ) = p`.
+
+**Deprecated.** No direct replacement: `locate_point` returns the
+analytic patch-parameter `ξ` (different semantics from the trilinear
+ξ this function recovers). If you specifically need the trilinear
+inverse, copy this function into your own code.
 """
 function invert_element_map(verts::NTuple{8, SVector{3, T}}, p::SVector{3, T};
-                             tol = T(1e-12), maxiter::Int = 20) where {T}
+                             tol = default_tol(T), maxiter::Int = 20) where {T}
+    Base.depwarn(
+        "`invert_element_map(verts, p)` (3D) is deprecated; for point→(element, ξ) " *
+        "use `locate_point(mesh, p)` which returns the analytic patch-parameter ξ. " *
+        "If you specifically need the trilinear inverse there is no direct replacement.",
+        :invert_element_map_3d)
     ξ = SVector{3, T}(one(T)/2, one(T)/2, one(T)/2)
     res_last = T(Inf)
     for _ in 1:maxiter
@@ -48,55 +101,259 @@ function invert_element_map(verts::NTuple{8, SVector{3, T}}, p::SVector{3, T};
 end
 
 """
-    locate_point(mesh::InflatedCubeMesh{T}, p::SVector{3, T}; tol)
-        → (element_index, ξ)
+    locate_point(mesh::Mesh{3, T}, p::SVector{3, T}; tol) → (element_index, ξ)
 
-Fast analytic point location: combines `locate_patch` and
-`locate_element_in_patch` for `O(1)` patch+element identification,
-followed by one Newton iteration on the trilinear element map to
-recover the precise reference coordinate `ξ` such that
-`trilinear_map(verts, ξ) ≈ p` to within `tol`.
+Analytic point location: identify the patch containing `p` via
+`locate_patch`, invert the patch parametric map analytically with
+`global_to_patch` to recover patch-local coords, and convert those
+to a `(element_index, ξ_in_element)` pair via
+`locate_element_in_patch`.
 
-Falls back to the brute-force `locate_point(mesh.base, p)` if Newton
-fails to converge on the analytically-identified element.
+Returns `(0, zero ξ)` if `p` lies outside every patch. The returned
+`ξ_in_element` is in the *analytic patch parameter space* — for
+curvilinear elements this differs from the trilinear-map ξ, but is
+the correct coordinate to feed to Lagrange interpolation against
+GLL nodes laid out by `_patch_point_and_jac`.
+
+Cost: `O(npatches)` per call; no Newton iteration.
 """
-function locate_point(mesh::InflatedCubeMesh{T}, p::SVector{3, T};
-                       tol = sqrt(eps(T))) where {T}
-    pi = locate_patch(mesh, p; tol)
-    pi == 0 && return 0, SVector{3, T}(zero(T), zero(T), zero(T))
-    ξ_patch = global_to_patch(mesh, pi, p; tol)
-    isnan(ξ_patch[1]) && return 0, SVector{3, T}(zero(T), zero(T), zero(T))
-    return locate_element_in_patch(mesh, pi, ξ_patch)
+function locate_point(mesh::Mesh{3, T}, p::SVector{3, T};
+                       tol = default_tol(T)) where {T}
+    pidx = locate_patch(mesh, p; tol)
+    pidx == 0 && return 0, SVector{3, T}(zero(T), zero(T), zero(T))
+    ξ_patch = global_to_patch(mesh.patch_desc[pidx], p; tol)
+    _is_outside(ξ_patch) && return 0, SVector{3, T}(zero(T), zero(T), zero(T))
+    return locate_element_in_patch(mesh, pidx, ξ_patch)
 end
 
-function locate_point(mesh::HexMesh{T}, p::SVector{3, T};
-                       tol = T(1e-8)) where {T}
-    @inbounds for e in 1:mesh.Ne
-        verts = element_vertices(mesh, e)
-        # Cheap reject: skip elements whose bounding box does not contain p.
-        xmin = min(verts[1][1], verts[2][1], verts[3][1], verts[4][1],
-                   verts[5][1], verts[6][1], verts[7][1], verts[8][1])
-        xmax = max(verts[1][1], verts[2][1], verts[3][1], verts[4][1],
-                   verts[5][1], verts[6][1], verts[7][1], verts[8][1])
-        (p[1] < xmin - tol || p[1] > xmax + tol) && continue
-        ymin = min(verts[1][2], verts[2][2], verts[3][2], verts[4][2],
-                   verts[5][2], verts[6][2], verts[7][2], verts[8][2])
-        ymax = max(verts[1][2], verts[2][2], verts[3][2], verts[4][2],
-                   verts[5][2], verts[6][2], verts[7][2], verts[8][2])
-        (p[2] < ymin - tol || p[2] > ymax + tol) && continue
-        zmin = min(verts[1][3], verts[2][3], verts[3][3], verts[4][3],
-                   verts[5][3], verts[6][3], verts[7][3], verts[8][3])
-        zmax = max(verts[1][3], verts[2][3], verts[3][3], verts[4][3],
-                   verts[5][3], verts[6][3], verts[7][3], verts[8][3])
-        (p[3] < zmin - tol || p[3] > zmax + tol) && continue
-        ξ, ok = invert_element_map(verts, p)
-        ok && all(-tol ≤ ξ[i] ≤ 1 + tol for i in 1:3) && return e, ξ
+# ----- 3D analytic patch ↔ global maps ------------------------------
+#
+# Per-direction inverse of `_patch_direction_vec(dir, b, c)`. The b/c
+# swaps on `-x, +y, -z` (right-handed local frames) carry through to
+# the inverse:
+#
+#   +x: v = ( 1, b, c)   →  f = x,   b = y/x,   c = z/x
+#   -x: v = (-1, c, b)   →  f = -x,  c = -y/x,  b = -z/x
+#   +y: v = ( c, 1, b)   →  f = y,   c = x/y,   b = z/y
+#   -y: v = ( b,-1, c)   →  f = -y,  b = -x/y,  c = -z/y
+#   +z: v = ( b, c, 1)   →  f = z,   b = x/z,   c = y/z
+#   -z: v = ( c, b,-1)   →  f = -z,  c = -x/z,  b = -y/z
+@inline function _inverse_dir_vec_3d(dir::Integer,
+                                      x::T, y::T, z::T) where {T}
+    if dir == 1                     # +x
+        return  x,  y / x,  z / x
+    elseif dir == 2                 # -x
+        return -x, -z / x, -y / x   # returns (f, b, c) with the b/c swap baked in
+    elseif dir == 3                 # +y
+        return  y,  z / y,  x / y
+    elseif dir == 4                 # -y
+        return -y, -x / y, -z / y
+    elseif dir == 5                 # +z
+        return  z,  x / z,  y / z
+    else                            # -z
+        return -z, -y / z, -x / z
     end
-    return 0, SVector{3, T}(zero(T), zero(T), zero(T))
 end
 
-# 1D Lagrange basis values at `ξ` for nodes `xs`. Length(xs) = N → returns
-# `NTuple{N, T}`. Generic and unoptimised — `O(N²)` per call.
+"""
+    patch_to_global(pd::PatchDesc{3, T}, ξ::SVector{3, T}) → SVector{3, T}
+
+Forward parametric map: given a patch descriptor and patch-local
+coordinates `ξ ∈ [0, 1]³`, return the physical point `P`. Exact
+inverse of [`global_to_patch`](@ref) for that same patch.
+
+The mesh-level overload `patch_to_global(mesh, patch_index, ξ)` is a
+thin convenience that forwards to `mesh.patch_desc[patch_index]`.
+"""
+function patch_to_global(pd::PatchDesc{3, T}, ξ::SVector{3, T}) where {T}
+    k = pd.kind
+    if k === Cubic
+        c = pd.cubic
+        return SVector{3, T}(
+            c.x_lo[1] + (c.x_hi[1] - c.x_lo[1]) * ξ[1],
+            c.x_lo[2] + (c.x_hi[2] - c.x_lo[2]) * ξ[2],
+            c.x_lo[3] + (c.x_hi[3] - c.x_lo[3]) * ξ[3])
+    elseif k === Inflation
+        pi = pd.inflation
+        a = pi.a_lo + (pi.a_hi - pi.a_lo) * ξ[1]
+        b = pi.b_lo + (pi.b_hi - pi.b_lo) * ξ[2]
+        c = pi.c_lo + (pi.c_hi - pi.c_lo) * ξ[3]
+        Q = sqrt(one(T) + b * b + c * c)
+        f = (one(T) - a) * pi.L + a * pi.R1 / Q
+        vx, vy, vz = _patch_direction_vec(pi.dir, b, c)
+        return SVector{3, T}(f * vx, f * vy, f * vz)
+    elseif k === Shell
+        ps = pd.shell
+        a = ps.a_lo + (ps.a_hi - ps.a_lo) * ξ[1]
+        b = ps.b_lo + (ps.b_hi - ps.b_lo) * ξ[2]
+        c = ps.c_lo + (ps.c_hi - ps.c_lo) * ξ[3]
+        Q = sqrt(one(T) + b * b + c * c)
+        r = (one(T) - a) * ps.R1 + a * ps.R2
+        f = r / Q
+        vx, vy, vz = _patch_direction_vec(ps.dir, b, c)
+        return SVector{3, T}(f * vx, f * vy, f * vz)
+    else  # Wedge
+        w = pd.wedge
+        a = w.a_lo + (w.a_hi - w.a_lo) * ξ[1]
+        b = w.b_lo + (w.b_hi - w.b_lo) * ξ[2]
+        c = w.c_lo + (w.c_hi - w.c_lo) * ξ[3]
+        r = w.R1 * (w.R2 / w.R1)^a
+        dir = w.dir
+        if     dir == Int8(1);  return SVector{3, T}( r,    b * r, c * r)
+        elseif dir == Int8(2);  return SVector{3, T}(-r,    b * r, c * r)
+        elseif dir == Int8(3);  return SVector{3, T}(b * r,  r,    c * r)
+        elseif dir == Int8(4);  return SVector{3, T}(b * r, -r,    c * r)
+        elseif dir == Int8(5);  return SVector{3, T}(b * r, c * r,  r)
+        else                    return SVector{3, T}(b * r, c * r, -r)
+        end
+    end
+end
+
+# Mesh-level convenience overload. **Deprecated** — pass the PatchDesc
+# directly via `mesh.patch_desc[patch_index]`.
+Base.@deprecate patch_to_global(mesh::Mesh{3, T}, patch_index::Integer,
+                                  ξ::SVector{3, T}) where {T} (
+    patch_to_global(mesh.patch_desc[patch_index], ξ))
+
+"""
+    global_to_patch(pd::PatchDesc{3, T}, p::SVector{3, T}; tol)
+        → SVector{3, T}
+
+Inverse of [`patch_to_global`](@ref). Returns `_outside_xi(Val(3), T)`
+if `p` lies outside this patch by more than `tol`. Closed-form for
+all four patch kinds (no Newton iteration). Round-trip exact to
+machine precision for points strictly inside the patch.
+"""
+function global_to_patch(pd::PatchDesc{3, T}, p::SVector{3, T};
+                          tol = default_tol(T)) where {T}
+    NaN_ξ = _outside_xi(Val(3), T)
+    k = pd.kind
+    if k === Cubic
+        c = pd.cubic
+        ξ_a = (p[1] - c.x_lo[1]) / (c.x_hi[1] - c.x_lo[1])
+        ξ_b = (p[2] - c.x_lo[2]) / (c.x_hi[2] - c.x_lo[2])
+        ξ_c = (p[3] - c.x_lo[3]) / (c.x_hi[3] - c.x_lo[3])
+        if -tol ≤ ξ_a ≤ one(T) + tol &&
+           -tol ≤ ξ_b ≤ one(T) + tol &&
+           -tol ≤ ξ_c ≤ one(T) + tol
+            return SVector{3, T}(clamp(ξ_a, zero(T), one(T)),
+                                  clamp(ξ_b, zero(T), one(T)),
+                                  clamp(ξ_c, zero(T), one(T)))
+        end
+        return NaN_ξ
+    elseif k === Inflation || k === Shell
+        # Common closed-form inversion.
+        if k === Inflation
+            pi = pd.inflation
+            dir, a_lo_p, a_hi_p, b_lo_p, b_hi_p, c_lo_p, c_hi_p, L_or_R1, top =
+                (pi.dir, pi.a_lo, pi.a_hi, pi.b_lo, pi.b_hi, pi.c_lo, pi.c_hi,
+                 pi.L, pi.R1)
+        else
+            ps = pd.shell
+            dir, a_lo_p, a_hi_p, b_lo_p, b_hi_p, c_lo_p, c_hi_p, L_or_R1, top =
+                (ps.dir, ps.a_lo, ps.a_hi, ps.b_lo, ps.b_hi, ps.c_lo, ps.c_hi,
+                 ps.R1, ps.R2)
+        end
+        f_val, b, c = _inverse_dir_vec_3d(dir, p[1], p[2], p[3])
+        if !(isfinite(b) && isfinite(c) && isfinite(f_val) && f_val > -tol)
+            return NaN_ξ
+        end
+        Q = sqrt(one(T) + b * b + c * c)
+        a = if k === Shell
+            r = sqrt(p[1]^2 + p[2]^2 + p[3]^2)
+            (r - L_or_R1) / (top - L_or_R1)
+        else
+            (f_val - L_or_R1) / (top / Q - L_or_R1)
+        end
+        ξ_a = (a - a_lo_p) / (a_hi_p - a_lo_p)
+        ξ_b = (b - b_lo_p) / (b_hi_p - b_lo_p)
+        ξ_c = (c - c_lo_p) / (c_hi_p - c_lo_p)
+        if -tol ≤ ξ_a ≤ one(T) + tol &&
+           -tol ≤ ξ_b ≤ one(T) + tol &&
+           -tol ≤ ξ_c ≤ one(T) + tol
+            return SVector{3, T}(clamp(ξ_a, zero(T), one(T)),
+                                  clamp(ξ_b, zero(T), one(T)),
+                                  clamp(ξ_c, zero(T), one(T)))
+        end
+        return NaN_ξ
+    else  # Wedge
+        w = pd.wedge
+        f_val, b, c = _inverse_dir_vec_3d(w.dir, p[1], p[2], p[3])
+        if !(isfinite(b) && isfinite(c) && isfinite(f_val) && f_val > -tol)
+            return NaN_ξ
+        end
+        # f = r = R1·(R2/R1)^a  ⇒  a = log(f / R1) / log(R2 / R1)
+        a = log(f_val / w.R1) / log(w.R2 / w.R1)
+        ξ_a = (a - w.a_lo) / (w.a_hi - w.a_lo)
+        ξ_b = (b - w.b_lo) / (w.b_hi - w.b_lo)
+        ξ_c = (c - w.c_lo) / (w.c_hi - w.c_lo)
+        if -tol ≤ ξ_a ≤ one(T) + tol &&
+           -tol ≤ ξ_b ≤ one(T) + tol &&
+           -tol ≤ ξ_c ≤ one(T) + tol
+            return SVector{3, T}(clamp(ξ_a, zero(T), one(T)),
+                                  clamp(ξ_b, zero(T), one(T)),
+                                  clamp(ξ_c, zero(T), one(T)))
+        end
+        return NaN_ξ
+    end
+end
+
+# Mesh-level convenience overload. **Deprecated** — pass the PatchDesc
+# directly via `mesh.patch_desc[patch_index]`.
+Base.@deprecate global_to_patch(mesh::Mesh{3, T}, patch_index::Integer,
+                                  p::SVector{3, T};
+                                  tol = default_tol(T)) where {T} (
+    global_to_patch(mesh.patch_desc[patch_index], p; tol))
+
+"""
+    locate_patch(mesh::Mesh{3, T}, p::SVector{3, T}; tol)
+        → patch_index :: Int
+
+Find the 1-indexed patch containing `p` by trying `global_to_patch`
+on each patch in `mesh.patch_desc` and returning the first that
+accepts it. Returns `0` if no patch contains `p`. Walks patches in
+storage order, so when patches overlap at their boundaries the
+lower-numbered patch wins.
+"""
+function locate_patch(mesh::Mesh{3, T}, p::SVector{3, T};
+                       tol = default_tol(T)) where {T}
+    for (p_idx, pd) in enumerate(mesh.patch_desc)
+        ξ = global_to_patch(pd, p; tol)
+        _is_outside(ξ) && continue
+        return p_idx
+    end
+    return 0
+end
+
+"""
+    locate_element_in_patch(mesh::Mesh{3, T}, patch_index, ξ_patch)
+        → (element_index, ξ_in_element)
+
+Given a patch index and patch-local coordinates `ξ_patch ∈ [0, 1]³`,
+return the global element index containing it and the within-element
+reference coordinate (also `[0, 1]³`).
+"""
+function locate_element_in_patch(mesh::Mesh{3, T},
+                                  patch_index::Integer,
+                                  ξ_patch::SVector{3, T}) where {T}
+    pd = mesh.patch_desc[patch_index]
+    d = dims(pd)
+    s_a = clamp(ξ_patch[1], zero(T), one(T)) * d[1]
+    s_b = clamp(ξ_patch[2], zero(T), one(T)) * d[2]
+    s_c = clamp(ξ_patch[3], zero(T), one(T)) * d[3]
+    a_cell = min(d[1], max(1, floor(Int, s_a) + 1))
+    b_cell = min(d[2], max(1, floor(Int, s_b) + 1))
+    c_cell = min(d[3], max(1, floor(Int, s_c) + 1))
+    ξ_elem_a = s_a - (a_cell - 1)
+    ξ_elem_b = s_b - (b_cell - 1)
+    ξ_elem_c = s_c - (c_cell - 1)
+    elem_off = mesh.patch_element_offset[patch_index]
+    e = elem_off + a_cell + d[1] * ((b_cell - 1) + d[2] * (c_cell - 1))
+    return e, SVector{3, T}(ξ_elem_a, ξ_elem_b, ξ_elem_c)
+end
+
+# 1D Lagrange basis values at `ξ` for nodes `xs`. Length(xs) = N →
+# returns NTuple{N, T}. Generic and unoptimised — `O(N²)` per call.
 function lagrange_basis(xs, ξ::T) where {T}
     N = length(xs)
     out = ntuple(N) do i
@@ -110,8 +367,13 @@ function lagrange_basis(xs, ξ::T) where {T}
     return out
 end
 
-# Tensor-product Lagrange interpolation of an `(N, N, N)` block at the
-# reference point `(ξ, η, ζ)`. `xs` are the 1D GLL nodes on `[0, 1]`.
+"""
+    tensor_interp(ue, ξ, η, ζ, xs) → T
+
+Tensor-product Lagrange interpolation of an `(N, N, N)` per-element
+field block at the reference point `(ξ, η, ζ)`. `xs` are the 1D GLL
+nodes on `[0, 1]`.
+"""
 function tensor_interp(ue::AbstractArray{T, 3},
                         ξ::T, η::T, ζ::T, xs) where {T}
     N = length(xs)
@@ -126,22 +388,14 @@ function tensor_interp(ue::AbstractArray{T, 3},
 end
 
 """
-    interpolate_field(mesh, xs, u, p; default) → T
+    interpolate_field(mesh::Mesh{3, T}, xs, u, p; default) → T
 
-Evaluate the per-element field `u` (shape `(N, N, N, Ne)`) at the
-physical point `p` by locating the element of `mesh::HexMesh` that
-contains `p`, inverting the trilinear element map, and applying
-tensor-product Lagrange interpolation on the 1-D reference-element
-nodes `xs::AbstractVector{T}` (typically `elem.xs ∈ [0, 1]` from the
-caller's SBP element). Returns `default` if `p` lies outside the
-mesh. Brute-force, intended for visualisation.
-
-Note: prior to the `HexMeshes` / `WaveToySecondOrder` split this
-signature took an `elem` object. Callers now pass `elem.xs`
-explicitly so `HexMeshes` does not need to know about the downstream
-element / operator type.
+Evaluate the per-element field `u` of shape `(N, N, N, Ne)` at the
+physical point `p`. Locates `p` analytically via `locate_point`, then
+applies tensor-product Lagrange interpolation on the reference-element
+GLL nodes `xs`. Returns `default` if `p` lies outside the mesh.
 """
-function interpolate_field(mesh::HexMesh{T},
+function interpolate_field(mesh::Mesh{3, T},
                             xs::AbstractVector,
                             u::AbstractArray{T, 4},
                             p::SVector{3, T};
@@ -151,12 +405,9 @@ function interpolate_field(mesh::HexMesh{T},
     return tensor_interp(view(u, :, :, :, e), ξ[1], ξ[2], ξ[3], xs)
 end
 
-interpolate_field(mesh::InflatedCubeMesh, xs, u, p; kwargs...) =
-    interpolate_field(mesh.base, xs, u, p; kwargs...)
-
 # Vectorised convenience: take any iterable of points and return an
 # array of values with the same shape.
-function interpolate_field(mesh::HexMesh{T},
+function interpolate_field(mesh::Mesh{3, T},
                             xs::AbstractVector,
                             u::AbstractArray{T, 4},
                             points::AbstractArray{<:SVector{3, T}};

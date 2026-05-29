@@ -1,15 +1,15 @@
 # ----------------------------------------------------------------------
 # 2D quadrilateral mesh builders.
 #
-# `make_quad_mesh` is a single-patch uniform mesh, built directly
+# `make_uniform_quad` is a single-patch uniform mesh, built directly
 # without skeleton infrastructure (multi-patch dedup unnecessary for
 # a single patch).
 #
 # `make_cubed_square_mesh` and the inflated-square family use the
-# 2D skeleton machinery in `skeleton_2d.jl`.
+# unified D-generic skeleton machinery in `skeleton.jl`.
 
 """
-    make_quad_mesh(::Type{T}, Mx::Int, My::Int, x0, x1) → QuadMesh{T}
+    make_uniform_quad(::Type{T}, Mx::Int, My::Int, x0, x1) → Mesh{2, T}
 
 Uniform 2D mesh of `Mx · My` quadrilateral elements on the square
 `[x0, x1]²`. Vertices are arranged on a regular `(Mx+1) × (My+1)`
@@ -23,7 +23,7 @@ grid; each element's four corners are stored in Gmsh-canonical order
 * Face 3 (−y): elements with `my = 1`, tagged `Int8(3)`
 * Face 4 (+y): elements with `my = My`, tagged `Int8(4)`
 """
-function make_quad_mesh(::Type{T}, Mx::Int, My::Int, x0, x1) where {T}
+function make_uniform_quad(::Type{T}, Mx::Int, My::Int, x0, x1) where {T}
     @assert Mx ≥ 1 && My ≥ 1
     Ne = Mx * My
     hx = (T(x1) - T(x0)) / T(Mx)
@@ -98,16 +98,39 @@ function make_quad_mesh(::Type{T}, Mx::Int, My::Int, x0, x1) where {T}
         end
     end
 
-    return QuadMesh{T}(Ne, neighbour, neighbour_face, orientation, bdry,
-                       vertex_coords, vertex_idx)
+    # Patch metadata: single Cubic patch covering [x0, x1]².
+    patch_desc = [PatchDesc(PatchCubic{2, T}((Mx, My),
+                                              (T(x0), T(x0)),
+                                              (T(x1), T(x1))))]
+    patch_id   = fill(Int32(1), Ne)
+    patch_idx  = Matrix{Int32}(undef, 2, Ne)
+    for my in 1:My, mx in 1:Mx
+        e = eid(mx, my)
+        patch_idx[1, e] = Int32(mx)
+        patch_idx[2, e] = Int32(my)
+    end
+    patch_element_offset = [0, Ne]
+
+    return Mesh{2, T}(Ne, neighbour, neighbour_face, orientation, bdry,
+                       vertex_coords, vertex_idx;
+                       patch_id              = patch_id,
+                       patch_idx             = patch_idx,
+                       patch_desc            = patch_desc,
+                       patch_element_offset  = patch_element_offset)
 end
 
 # Square shorthand: equal element count in both directions.
-make_quad_mesh(::Type{T}, M::Int, x0, x1) where {T} =
-    make_quad_mesh(T, M, M, x0, x1)
+make_uniform_quad(::Type{T}, M::Int, x0, x1) where {T} =
+    make_uniform_quad(T, M, M, x0, x1)
+
+# Deprecated alias. New code should call `make_uniform_quad`.
+Base.@deprecate make_quad_mesh(::Type{T}, Mx::Int, My::Int, x0, x1) where {T} (
+    make_uniform_quad(T, Mx, My, x0, x1))
+Base.@deprecate make_quad_mesh(::Type{T}, M::Int, x0, x1) where {T} (
+    make_uniform_quad(T, M, x0, x1))
 
 """
-    make_cubed_square_mesh(::Type{T}, M::Int, R::Real) → QuadMesh{T}
+    make_cubed_square_mesh(::Type{T}, M::Int, R::Real) → Mesh{2, T}
 
 Conforming quadrilateral mesh of the square `[-1, 1]²` built from a
 "cubed-sphere"-style block topology applied to a square domain: one
@@ -147,7 +170,7 @@ function make_cubed_square_mesh(::Type{T}, M::Int, R::Real) where {T}
     Rv = T(R)
     L = max(1, round(Int, log(1/R) / log(1 + 2/M)))
     skel = _cubed_square_skeleton(T, M, L, Rv)
-    return _skeleton_to_mesh_2d(skel)
+    return _skeleton_to_mesh(skel)
 end
 
 # Tangential-edge connectivity for the four radial directions of a
@@ -171,23 +194,19 @@ function _cubed_square_skeleton(::Type{T}, M::Int, L::Int, Rv::T) where {T}
     o = one(T)
 
     # Patch 1: inner square [-R, R]².
-    inner = PatchSpec2D{T}(M, M, Cubical_2D,
-                            -Rv, Rv, -Rv, Rv,
-                            z, z, z)
+    inner = PatchDesc(PatchCubic{2, T}((M, M), (-Rv, -Rv), (Rv, Rv)))
 
     # Patches 2..5: outer wedges in dir order (+x, -x, +y, -y).
-    # All wedges share `a ∈ [0, 1]`, `b ∈ [-1, 1]`; the family selects
-    # the embedding direction. `(R1, R2) = (R, 1)` for the radial map.
-    wedge_families = (WedgePosX_2D, WedgeNegX_2D,
-                      WedgePosY_2D, WedgeNegY_2D)
-    patches = PatchSpec2D{T}[inner]
-    for fam in wedge_families
-        push!(patches, PatchSpec2D{T}(L, M, fam,
-                                       z, o, -o, o,
-                                       z, Rv, o))
+    # All wedges share `a ∈ [0, 1]`, `b ∈ [-1, 1]`; `dir` selects the
+    # embedding direction. `(R1, R2) = (R, 1)` for the radial map.
+    patches = PatchDesc{2, T}[inner]
+    for dir in 1:4
+        push!(patches, PatchDesc(PatchWedge{2, T}((L, M), Int8(dir),
+                                                    z, o, -o, o, z, z,
+                                                    Rv, o)))
     end
 
-    faces = Matrix{FaceLink2D}(undef, 4, length(patches))
+    faces = Matrix{FaceLink}(undef, 4, length(patches))
 
     # ---- Inner square ↔ wedge interfaces. ----
     # Inner face `f` ↔ wedge whose direction matches that face,
@@ -199,15 +218,15 @@ function _cubed_square_skeleton(::Type{T}, M::Int, L::Int, Rv::T) where {T}
     inner_face_to_wedge = (3, 2, 5, 4)
     for f in 1:4
         wp = inner_face_to_wedge[f]
-        faces[f, 1]  = interior_link_2d(wp, 1, 0)
-        faces[1, wp] = interior_link_2d(1, f, 0)
+        faces[f, 1]  = interior_link(wp, 1, 0)
+        faces[1, wp] = interior_link(1, f, 0)
     end
 
     # ---- Outer-edge boundary tags on each wedge's face 2. ----
     # Tag convention `-x=1, +x=2, -y=3, +y=4` keyed by wedge dir.
     OUTER_TAG = (Int8(2), Int8(1), Int8(4), Int8(3))
     for dir in 1:4
-        faces[2, dir + 1] = boundary_link_2d(OUTER_TAG[dir])
+        faces[2, dir + 1] = boundary_link(OUTER_TAG[dir])
     end
 
     # ---- Wedge ↔ wedge tangential edges. ----
@@ -215,9 +234,9 @@ function _cubed_square_skeleton(::Type{T}, M::Int, L::Int, Rv::T) where {T}
         wp = dir + 1
         for f in 3:4
             neigh_dir, neigh_face = _WEDGE_NEIGHBOUR_2D[dir][f - 2]
-            faces[f, wp] = interior_link_2d(neigh_dir + 1, neigh_face, 0)
+            faces[f, wp] = interior_link(neigh_dir + 1, neigh_face, 0)
         end
     end
 
-    return SkeletonMesh2D{T}(patches, faces)
+    return SkeletonMesh{2, T}(patches, faces)
 end

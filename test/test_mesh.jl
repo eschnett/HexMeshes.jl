@@ -7,24 +7,24 @@
 # `MeshGeometry` type lives there.
 
 using HexMeshes
-using HexMeshes: HexMesh, InflatedCubeMesh, make_cubical_mesh,
-                 make_cubed_cube_mesh, make_inflated_cube_mesh, nv,
-                 locate_patch, global_to_patch, patch_to_global,
+using HexMeshes: Mesh, PatchDesc, PatchKind, Cubic, Wedge, Inflation, Shell,
+                 make_uniform_hex, make_cubed_cube_mesh, make_inflated_cube_mesh, nv,
+                 npatches, locate_patch, global_to_patch, patch_to_global,
                  locate_element_in_patch, locate_point
 using StaticArrays
 using Test
 
-count_zero_neighbours(m::HexMesh) = count(==(0), m.neighbour)
+count_zero_neighbours(m::Mesh{3}) = count(==(0), m.conn.neighbour)
 
 @testset "mesh" begin
 
-    @testset "make_cubical_mesh: shapes" begin
-        m = make_cubical_mesh(Float64, 2, 3, 4, 0.0, 1.0)
-        @test m isa HexMesh{Float64}
+    @testset "make_uniform_hex: shapes" begin
+        m = make_uniform_hex(Float64, 2, 3, 4, 0.0, 1.0)
+        @test m isa Mesh{3, Float64}
         @test m.Ne == 2 * 3 * 4
-        @test size(m.neighbour)     == (6, m.Ne)
-        @test size(m.orientation)   == (6, m.Ne)
-        @test size(m.bdry)          == (6, m.Ne)
+        @test size(m.conn.neighbour)     == (6, m.Ne)
+        @test size(m.conn.orientation)   == (6, m.Ne)
+        @test size(m.conn.bdry)          == (6, m.Ne)
         @test size(m.vertex_coords) == (3, (2+1)*(3+1)*(4+1))
         @test size(m.vertex_idx)    == (8, m.Ne)
         @test nv(m) == (2+1)*(3+1)*(4+1)
@@ -33,7 +33,7 @@ count_zero_neighbours(m::HexMesh) = count(==(0), m.neighbour)
     @testset "shared vertices: adjacent elements reuse the same vertex ID" begin
         # For an `Mx × My × Mz` mesh, the total number of vertices is
         # (Mx+1)(My+1)(Mz+1), much less than 8·Ne — sharing must be exact.
-        m = make_cubical_mesh(Float64, 3, 3, 3, 0.0, 1.0)
+        m = make_uniform_hex(Float64, 3, 3, 3, 0.0, 1.0)
         @test nv(m) == 4 * 4 * 4
         @test nv(m) < 8 * m.Ne                # i.e. real sharing happened
 
@@ -47,14 +47,14 @@ count_zero_neighbours(m::HexMesh) = count(==(0), m.neighbour)
         @test m.vertex_idx[7, 1] == m.vertex_idx[8, 2]
     end
 
-    @testset "make_cubical_mesh: orientation is always 0 (axis-aligned)" begin
-        m = make_cubical_mesh(Float64, 4, 0.0, 1.0)
-        @test all(m.orientation .== 0)
+    @testset "make_uniform_hex: orientation is always 0 (axis-aligned)" begin
+        m = make_uniform_hex(Float64, 4, 0.0, 1.0)
+        @test all(m.conn.orientation .== 0)
     end
 
-    @testset "make_cubical_mesh: boundary tags only on outer faces" begin
+    @testset "make_uniform_hex: boundary tags only on outer faces" begin
         Mx, My, Mz = 3, 2, 4
-        m = make_cubical_mesh(Float64, Mx, My, Mz, 0.0, 1.0)
+        m = make_uniform_hex(Float64, Mx, My, Mz, 0.0, 1.0)
         # Helper: linear index from (mx, my, mz).
         lidx(mx, my, mz) = mx + (my-1)*Mx + (mz-1)*Mx*My
         # Inspect every element.
@@ -63,36 +63,36 @@ count_zero_neighbours(m::HexMesh) = count(==(0), m.neighbour)
             # On each face, bdry ≠ 0 iff neighbour == 0 — the two together
             # exactly partition the six face slots.
             for f in 1:6
-                @test (m.bdry[f, e] ≠ 0) == (m.neighbour[f, e] == 0)
+                @test (m.conn.bdry[f, e] ≠ 0) == (m.conn.neighbour[f, e] == 0)
             end
             # The outer-tag values match the face index for the cubical mesh.
-            mx == 1  && @test m.bdry[1, e] == 1
-            mx == Mx && @test m.bdry[2, e] == 2
-            my == 1  && @test m.bdry[3, e] == 3
-            my == My && @test m.bdry[4, e] == 4
-            mz == 1  && @test m.bdry[5, e] == 5
-            mz == Mz && @test m.bdry[6, e] == 6
+            mx == 1  && @test m.conn.bdry[1, e] == 1
+            mx == Mx && @test m.conn.bdry[2, e] == 2
+            my == 1  && @test m.conn.bdry[3, e] == 3
+            my == My && @test m.conn.bdry[4, e] == 4
+            mz == 1  && @test m.conn.bdry[5, e] == 5
+            mz == Mz && @test m.conn.bdry[6, e] == 6
         end
     end
 
-    @testset "make_cubical_mesh: neighbour pointers are symmetric" begin
+    @testset "make_uniform_hex: neighbour pointers are symmetric" begin
         # If element A says "my +x neighbour is B", then B must say
         # "my −x neighbour is A". Same for ±y and ±z.
-        m = make_cubical_mesh(Float64, 3, 0.0, 1.0)
+        m = make_uniform_hex(Float64, 3, 0.0, 1.0)
         opposite = (2, 1, 4, 3, 6, 5)   # opposite face for each of 1..6
         for e in 1:m.Ne
             for f in 1:6
-                n = m.neighbour[f, e]
+                n = m.conn.neighbour[f, e]
                 n == 0 && continue
-                @test m.neighbour[opposite[f], n] == e
+                @test m.conn.neighbour[opposite[f], n] == e
             end
         end
     end
 
-    @testset "make_cubical_mesh: vertex coordinates" begin
+    @testset "make_uniform_hex: vertex coordinates" begin
         # A 2×2×2 cubical mesh of [0, 2]³ should have element 1 (mx=my=mz=1)
         # occupying [0,1]³ with vertices in Gmsh-canonical ordering.
-        m = make_cubical_mesh(Float64, 2, 0.0, 2.0)
+        m = make_uniform_hex(Float64, 2, 0.0, 2.0)
 
         # Look up element 1's eight corner positions via the shared table.
         corner(e, v) = m.vertex_coords[:, m.vertex_idx[v, e]]
@@ -131,7 +131,7 @@ count_zero_neighbours(m::HexMesh) = count(==(0), m.neighbour)
         # slots, but we follow the prompt and accumulate explicitly.
         count = zeros(Int, m.Ne)
         for e in 1:m.Ne, f in 1:6
-            n = m.neighbour[f, e]
+            n = m.conn.neighbour[f, e]
             n == 0 && continue
             count[n] += 1
         end
@@ -164,13 +164,20 @@ count_zero_neighbours(m::HexMesh) = count(==(0), m.neighbour)
         T = Float64
         L = 1.0; R1 = 2.5; R2 = 5.0; M = 4
         m = make_inflated_cube_mesh(T, L, R1, R2, M)
-        @test m isa InflatedCubeMesh{T}
-        @test m.L == L && m.R1 == R1 && m.R2 == R2
+        @test m isa Mesh{3, T}
+        # Inflation and shell patches carry the L / R1 / R2 constants.
+        @test m.patch_desc[2].inflation.L == L
+        @test m.patch_desc[2].inflation.R1 == R1
+        @test m.patch_desc[8].shell.R2    == R2
         @test m.Ne == 736
+        @test npatches(m) == 13
 
-        n_inner = count(p -> is_cubical(p.kind),   m.patch_info)
-        n_infl  = count(p -> is_inflation(p.kind), m.patch_info)
-        n_shell = count(p -> is_shell(p.kind),     m.patch_info)
+        # Patch-kind classification by walking patch_id and reading
+        # the active variant of each per-element PatchDesc.
+        kinds = [m.patch_desc[m.patch_id[e]].kind for e in 1:m.Ne]
+        n_inner = count(==(Cubic),     kinds)
+        n_infl  = count(==(Inflation), kinds)
+        n_shell = count(==(Shell),     kinds)
         @test n_inner == M^3
         @test n_infl  == 6 * 16 * 2     # M_i = 2
         @test n_shell == 6 * 16 * 5     # M_s = 5
@@ -179,12 +186,12 @@ count_zero_neighbours(m::HexMesh) = count(==(0), m.neighbour)
         # Every outer-boundary face lies on the outer sphere |x| = R2,
         # and every shell-outer face is tagged. The only outer faces of
         # the topology are exactly the 6·M² shell-patch outer faces.
-        @test count(==(0), m.neighbour) == 6 * M^2
-        @test count(!=(0), m.bdry)       == 6 * M^2
+        @test count(==(0), m.conn.neighbour) == 6 * M^2
+        @test count(!=(0), m.conn.bdry)       == 6 * M^2
 
         # Boundary positions are within tolerance of |x| = R2.
         for ee in 1:m.Ne, f in 1:6
-            m.bdry[f, ee] == 0 && continue
+            m.conn.bdry[f, ee] == 0 && continue
             for ℓ in (1, 4, 5, 8)  # any face-corner vertex
                 # Crude: pick a vertex from the element; only need one
                 # per face to confirm tagging is on the sphere.
@@ -211,13 +218,13 @@ count_zero_neighbours(m::HexMesh) = count(==(0), m.neighbour)
         T = Float64
         m = make_inflated_cube_mesh(T, 0.1, 0.3, 1.0, 4)
         for e in 1:m.Ne
-            m.patch_info[e].kind == 0 || continue   # inner cube only
+            m.patch_desc[m.patch_id[e]].kind === Cubic || continue   # inner cube only
             for f in 1:6
                 # An inner-cube element should never touch the outer-
                 # domain boundary: it always has a neighbour, whether a
                 # sibling cube element or an inflation patch.
-                @test m.neighbour[f, e] != 0
-                @test m.bdry[f, e] == 0
+                @test m.conn.neighbour[f, e] != 0
+                @test m.conn.bdry[f, e] == 0
             end
         end
     end
@@ -227,13 +234,13 @@ count_zero_neighbours(m::HexMesh) = count(==(0), m.neighbour)
         m = make_inflated_cube_mesh(T, 1.0, 2.0, 4.0, 3)
         # Each non-zero neighbour link must round-trip.
         for e in 1:m.Ne, f in 1:6
-            n = m.neighbour[f, e]
+            n = m.conn.neighbour[f, e]
             n == 0 && continue
-            fn = m.neighbour_face[f, e]
-            @test m.neighbour[fn, n] == e
-            @test m.neighbour_face[fn, n] == f
+            fn = m.conn.neighbour_face[f, e]
+            @test m.conn.neighbour[fn, n] == e
+            @test m.conn.neighbour_face[fn, n] == f
         end
-        @test all(0 .≤ m.orientation .≤ 7)
+        @test all(0 .≤ m.conn.orientation .≤ 7)
     end
 
     # NB: the original "geometry is well-formed" testset (which used
@@ -249,8 +256,8 @@ count_zero_neighbours(m::HexMesh) = count(==(0), m.neighbour)
         for patch_index in 1:13
             for _ in 1:20
                 ξ = SVector{3, T}(rand(), rand(), rand())
-                p = patch_to_global(m, patch_index, ξ)
-                ξ2 = global_to_patch(m, patch_index, p)
+                p = patch_to_global(m.patch_desc[patch_index], ξ)
+                ξ2 = global_to_patch(m.patch_desc[patch_index], p)
                 @test !isnan(ξ2[1])
                 @test ξ2[1] ≈ ξ[1] atol=1e-12
                 @test ξ2[2] ≈ ξ[2] atol=1e-12
@@ -264,9 +271,9 @@ count_zero_neighbours(m::HexMesh) = count(==(0), m.neighbour)
             p = SVector{3, T}(x, y, z)
             i = locate_patch(m, p)
             @test i ≠ 0
-            ξ = global_to_patch(m, i, p)
+            ξ = global_to_patch(m.patch_desc[i], p)
             @test !isnan(ξ[1])
-            p2 = patch_to_global(m, i, ξ)
+            p2 = patch_to_global(m.patch_desc[i], ξ)
             @test p2[1] ≈ p[1] atol=1e-12
             @test p2[2] ≈ p[2] atol=1e-12
             @test p2[3] ≈ p[3] atol=1e-12
@@ -286,8 +293,8 @@ count_zero_neighbours(m::HexMesh) = count(==(0), m.neighbour)
         @test locate_patch(m, SVector{3, T}(0.7, 0.0, 0.0)) == 8     # +x shell
         @test locate_patch(m, SVector{3, T}(2.0, 0.0, 0.0)) == 0     # outside
         # Wrong-patch sanity
-        @test isnan(global_to_patch(m, 2, SVector{3, T}(0.0, 0.0, 0.8))[1])
-        @test isnan(global_to_patch(m, 6, SVector{3, T}(0.7, 0.0, 0.0))[1])
+        @test isnan(global_to_patch(m.patch_desc[2], SVector{3, T}(0.0, 0.0, 0.8))[1])
+        @test isnan(global_to_patch(m.patch_desc[6], SVector{3, T}(0.7, 0.0, 0.0))[1])
     end
 
 end

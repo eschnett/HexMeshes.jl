@@ -1,79 +1,46 @@
-# Mesh topology + geometry for a conforming hexahedral element mesh.
+# Mesh topology + geometry for a conforming tensor-product element mesh
+# in `D = 1, 2, 3` spatial dimensions.
 #
-# The mesh is the data layer that decouples the 3D kernels from any
+# A `Mesh{D, T}` is the data layer that decouples kernels from any
 # particular grid arrangement: instead of indexing neighbours via
-# `(mx ± 1, my, mz)` tuples on a 3D lattice, the per-element loop walks
-# a 1D list of elements and asks the mesh for each element's six
-# neighbours and the orientation of each face. This is the prerequisite
-# for unstructured meshes (cubed sphere, multi-block topologies, future
-# adaptive refinement).
+# `(mx ± 1, my, mz)` tuples on a `D`-dimensional lattice, the per-
+# element loop walks a 1D list of elements and asks the mesh for each
+# element's `2D` neighbours and the orientation of each face. This is
+# the prerequisite for unstructured meshes (cubed sphere, multi-block
+# topologies, future adaptive refinement).
 #
 # Vertex storage follows the standard finite-element / Gmsh convention:
-# one shared coordinate table `vertex_coords` of shape `(3, Nv)` over the
-# `Nv` distinct mesh vertices, plus a per-element connectivity table
-# `vertex_idx` of shape `(8, Ne)` giving the index into `vertex_coords`
-# of each of the eight corners of each hex. Shared vertices on common
-# faces of adjacent elements are stored once, not duplicated.
+# one shared coordinate table `vertex_coords` of shape `(D, Nv)` over
+# the `Nv` distinct mesh vertices, plus a per-element connectivity
+# table `vertex_idx` of shape `(2^D, Ne)` giving the index into
+# `vertex_coords` of each corner of each element. Shared vertices on
+# common faces of adjacent elements are stored once, not duplicated.
 #
 # Face index convention (used throughout for `neighbour`, `orientation`,
-# `bdry`):
+# `bdry`), in `1..2D`:
 #
-#     1 → −x face        2 → +x face
-#     3 → −y face        4 → +y face
-#     5 → −z face        6 → +z face
+#     1 → −x face        2 → +x face        (always present)
+#     3 → −y face        4 → +y face        (D ≥ 2)
+#     5 → −z face        6 → +z face        (D = 3)
 #
-# Vertex index convention (8 corners of each hex, Gmsh-canonical ordering):
+# Vertex index convention (`2^D` corners per element, Gmsh-canonical
+# tensor-product ordering). In 3D the eight corners are:
 #
 #     1: (−x, −y, −z)    2: (+x, −y, −z)
 #     3: (+x, +y, −z)    4: (−x, +y, −z)
 #     5: (−x, −y, +z)    6: (+x, −y, +z)
 #     7: (+x, +y, +z)    8: (−x, +y, +z)
+#
+# The 2D ordering omits the `±z` axis (corners 1..4 above); the 1D
+# ordering keeps only `1: (−x)` and `2: (+x)`.
 
-"""
-    HexMesh{T}
-
-Connectivity + geometry of a conforming hexahedral mesh.
-
-# Fields
-
-* `Ne :: Int` — number of elements.
-* `neighbour :: Matrix{Int32}` of shape `(6, Ne)` — element ID of the
-  neighbour across each of the six faces (face ordering as above). `0`
-  marks an outer-boundary face. Stored as `Int32` rather than `Int` so
-  that `nbr` reads from inside the GPU kernel stay 32-bit (Apple
-  Silicon GPUs emulate 64-bit integer arithmetic, which costs ~4× on
-  every 4-D array offset computation in `_add_face_sat!`). 2^31 ≫
-  any realistic element count, so the narrower type is safe.
-* `neighbour_face :: Matrix{Int8}` of shape `(6, Ne)` — face index of
-  the neighbour element that abuts face `f` of `e`. For an axis-aligned
-  cubical mesh this is just the opposite face index along the same axis
-  (`(2,1,4,3,6,5)[f]`); for multi-patch meshes where the two sides have
-  different orthogonal-axis conventions it can be any of the six values.
-  `0` on outer-boundary faces (where `neighbour == 0`).
-* `orientation :: Matrix{Int8}` of shape `(6, Ne)` — `0..7` encoding of
-  the D₄ transform that maps this face's local face-quadrature `(p, q)`
-  coordinates to the matching face on the neighbour. `0` is the identity
-  (used everywhere on axis-aligned meshes and on the cubed-cube mesh
-  by construction). The transform table is documented in `_neigh_pq`
-  below.
-* `bdry :: Matrix{Int8}` of shape `(6, Ne)` — boundary-condition tag,
-  nonzero only on outer faces.
-* `vertex_coords :: Matrix{T}` of shape `(3, Nv)` — Cartesian coordinates
-  of every distinct vertex in the mesh. Shared between adjacent elements.
-* `vertex_idx :: Matrix{Int}` of shape `(8, Ne)` — for each element, the
-  indices into `vertex_coords` of its eight corners (in the canonical
-  vertex ordering above).
-"""
-# `MeshConnectivity{D, MI, MI8}` bundles only what the kernel reads from
-# a mesh: the four connectivity matrices, indexed by `(face, element)`,
-# with `face ∈ 1..2D` faces per element. Whoever launches the kernel
+# `MeshConnectivity{D, MI, MI8}` bundles only what the kernel reads
+# from a mesh: the four connectivity matrices, indexed by
+# `(face, element)` with `face ∈ 1..2D`. Whoever launches the kernel
 # sees this as one bitstype-friendly argument, so GPU adaptation can
 # replace its arrays with `MtlDeviceMatrix` (etc.) in one shot.
 # `Mesh{D, T}` (below) embeds a `MeshConnectivity{D, ...}` plus the
-# host-only vertex metadata that the kernel never touches.
-#
-# The `D` type parameter is the spatial dimension (1, 2, or 3). All
-# three are supported; `HexMesh = Mesh{3}` is the historical alias.
+# host-only vertex and patch metadata that the kernel never touches.
 struct MeshConnectivity{D, MI, MI8}
     neighbour      :: MI    # (2D, Ne)
     neighbour_face :: MI8   # (2D, Ne)
@@ -88,32 +55,78 @@ MeshConnectivity{D}(neighbour::MI, neighbour_face::MI8,
                     orientation::MI8, bdry::MI8) where {D, MI, MI8} =
     MeshConnectivity{D, MI, MI8}(neighbour, neighbour_face, orientation, bdry)
 
-# `Mesh{D, T}` is parametrised on the *concrete* storage types of the
-# kernel-read connectivity matrices (via `conn::MeshConnectivity`) so
-# that they may live on a GPU as `CuArray`, `MtlArray`, `ROCArray`, etc.
-# Host-only fields (`vertex_coords`, `vertex_idx`) stay concrete
-# `Matrix` — they are read by plotting and diagnostics, never by the
-# kernel, so there is no benefit to migrating them onto a device.
-# A `Base.getproperty` forwarder below preserves `mesh.neighbour` /
-# `mesh.bdry` / etc. so existing host code does not need updating.
-#
-# Array shapes (with `D` the spatial dimension):
-#
-# * `vertex_coords :: Matrix{T}` is `(D, Nv)`.
-# * `vertex_idx    :: Matrix{Int}` is `(2^D, Ne)` — `2^D` corners per
-#   element in Gmsh-canonical tensor-product ordering.
-# * Connectivity matrices are all `(2D, Ne)` — `2D` faces per element.
-struct Mesh{D, T, MI, MI8}
-    Ne            :: Int
-    conn          :: MeshConnectivity{D, MI, MI8}
-    vertex_coords :: Matrix{T}
-    vertex_idx    :: Matrix{Int}
+"""
+    Mesh{D, T, MI, MI8}
 
+Conforming tensor-product element mesh in `D = 1, 2, 3` spatial
+dimensions, with `T`-typed vertex coordinates. The kernel-read
+connectivity arrays have concrete types `MI, MI8` (see below).
+
+# Type parameters
+
+* `D` — spatial dimension (`1`, `2`, or `3`).
+* `T` — element type of `vertex_coords` (typically `Float32` /
+  `Float64`).
+* `MI`, `MI8` — concrete storage types of the kernel-read
+  connectivity matrices (`AbstractMatrix{Int32}` / `Int8`
+  respectively). Parametrised so the connectivity may live on a GPU
+  as `CuArray`, `MtlArray`, `ROCArray`, etc. while the host-only
+  fields stay plain `Matrix`.
+
+# Fields
+
+* `Ne :: Int` — number of elements.
+* `conn :: MeshConnectivity{D, MI, MI8}` — kernel-read connectivity
+  bundle. Read its fields directly as `mesh.conn.neighbour`,
+  `mesh.conn.neighbour_face`, `mesh.conn.orientation`,
+  `mesh.conn.bdry` (each of shape `(2D, Ne)`).
+* `vertex_coords :: Matrix{T}` of shape `(D, Nv)` — Cartesian
+  coordinates of every distinct mesh vertex. Host-only.
+* `vertex_idx :: Matrix{Int}` of shape `(2^D, Ne)` — for each
+  element, indices into `vertex_coords` of its `2^D` corners in
+  Gmsh-canonical tensor-product ordering. Host-only.
+* `patch_id :: Vector{Int32}` of length `Ne` — owning patch
+  (1-indexed into `patch_desc`) of each element. Host-only.
+* `patch_idx :: Matrix{Int32}` of shape `(D, Ne)` — 1-indexed
+  position of each element inside its patch's structured grid.
+  Host-only.
+* `patch_desc :: Vector{PatchDesc{D, T}}` of length `npatches` —
+  parametric geometry of each patch (`Cubic` / `Wedge` /
+  `Inflation` / `Shell`). Host-only.
+* `patch_element_offset :: Vector{Int}` of length `npatches + 1` —
+  cumulative element offset per patch; element ids inside patch `p`
+  occupy the range `(offset[p] + 1) : offset[p+1]`. Host-only.
+
+The four patch fields enable `O(1)` analytic point location and
+analytic-Jacobian dispatch in `make_geometry` — kernels never read
+them.
+"""
+struct Mesh{D, T, MI, MI8}
+    Ne                   :: Int
+    conn                 :: MeshConnectivity{D, MI, MI8}
+    vertex_coords        :: Matrix{T}
+    vertex_idx           :: Matrix{Int}
+    patch_id             :: Vector{Int32}
+    patch_idx            :: Matrix{Int32}
+    patch_desc           :: Vector{PatchDesc{D, T}}
+    patch_element_offset :: Vector{Int}
+
+    # Primary constructor. Patch fields are keyword args with empty
+    # defaults for transition-period call sites that don't yet supply
+    # them; once all builders are updated (Phase 4) the defaults will
+    # be dropped.
     function Mesh{D, T}(Ne::Int,
                         conn::MeshConnectivity{D, MI, MI8},
                         vertex_coords::Matrix{T},
-                        vertex_idx::Matrix{Int}) where {D, T, MI, MI8}
-        new{D, T, MI, MI8}(Ne, conn, vertex_coords, vertex_idx)
+                        vertex_idx::Matrix{Int};
+                        patch_id::Vector{Int32} = Int32[],
+                        patch_idx::Matrix{Int32} = zeros(Int32, D, 0),
+                        patch_desc::Vector{PatchDesc{D, T}} = PatchDesc{D, T}[],
+                        patch_element_offset::Vector{Int} = Int[0],
+                        ) where {D, T, MI, MI8}
+        new{D, T, MI, MI8}(Ne, conn, vertex_coords, vertex_idx,
+                           patch_id, patch_idx, patch_desc,
+                           patch_element_offset)
     end
 
     # Back-compat constructor matching the old flat-field signature
@@ -122,33 +135,41 @@ struct Mesh{D, T, MI, MI8}
                         neighbour::MI, neighbour_face::MI8,
                         orientation::MI8, bdry::MI8,
                         vertex_coords::Matrix{T},
-                        vertex_idx::Matrix{Int}) where {D, T, MI, MI8}
+                        vertex_idx::Matrix{Int};
+                        patch_id::Vector{Int32} = Int32[],
+                        patch_idx::Matrix{Int32} = zeros(Int32, D, 0),
+                        patch_desc::Vector{PatchDesc{D, T}} = PatchDesc{D, T}[],
+                        patch_element_offset::Vector{Int} = Int[0],
+                        ) where {D, T, MI, MI8}
         new{D, T, MI, MI8}(Ne,
                            MeshConnectivity{D, MI, MI8}(neighbour, neighbour_face,
                                                         orientation, bdry),
-                           vertex_coords, vertex_idx)
+                           vertex_coords, vertex_idx,
+                           patch_id, patch_idx, patch_desc,
+                           patch_element_offset)
     end
 end
 
-# Convenience aliases — these preserve the historical 3D API surface
-# (`HexMesh{T}(...)` still works, `m isa HexMesh{T}` still works) and
-# introduce the 1D / 2D variants in the same pattern.
-const LineMesh = Mesh{1}
-const QuadMesh = Mesh{2}
-const HexMesh  = Mesh{3}
+"""
+    npatches(mesh::Mesh) → Int
 
-# `mesh.neighbour` etc. forward to `mesh.conn.*` so existing call sites
-# (mesh-build code, tests, diagnostics) keep working without churn.
-@inline function Base.getproperty(m::Mesh, name::Symbol)
-    if name === :neighbour || name === :neighbour_face ||
-       name === :orientation || name === :bdry
-        getfield(getfield(m, :conn), name)
-    else
-        getfield(m, name)
-    end
-end
-Base.propertynames(m::Mesh) = (:Ne, :conn, :vertex_coords, :vertex_idx,
-                               :neighbour, :neighbour_face, :orientation, :bdry)
+Number of patches in the mesh's `patch_desc` table. Returns `0` for
+meshes that haven't yet been populated with patch metadata
+(transition-period state).
+"""
+@inline npatches(mesh::Mesh) = length(mesh.patch_desc)
+
+# Convenience aliases for the three supported dimensions. **Deprecated**
+# — new code should prefer `Mesh{1}` / `Mesh{2}` / `Mesh{3}` directly.
+# Each access emits a `depwarn` once per session.
+Base.@deprecate_binding LineMesh Mesh{1} true
+Base.@deprecate_binding QuadMesh Mesh{2} true
+Base.@deprecate_binding HexMesh  Mesh{3} true
+
+# Mesh has no `getproperty` forwarder; the kernel-read fields live on
+# `mesh.conn.{neighbour, neighbour_face, orientation, bdry}` and must
+# be accessed there. The transitional `mesh.X` shorthand emitted a
+# deprecation warning and has been removed.
 
 """
     nv(mesh::Mesh) → Int
@@ -158,20 +179,22 @@ Number of distinct mesh vertices.
 nv(mesh::Mesh) = size(mesh.vertex_coords, 2)
 
 
-# Face-local coordinate transforms per dimension:
+# Face-local coordinate transforms for `Mesh{D}`:
 #
-# * 1D — face is a 0-D point; no coordinates. `_neigh_pq` is unused.
-# * 2D — face is a 1-D segment with one local coord `p ∈ 1..N`.
-#        Orientation group is D₁ (2 elements: identity, reverse).
-#        Encoded by `o ∈ 0..1`.
-# * 3D — face is a 2-D quad with `(p, q) ∈ 1..N²`. Orientation group
-#        is D₄ (8 elements). Encoded by `o ∈ 0..7`.
+# * `D = 1` — face is a 0-D point; no coordinates. Neither `_neigh_p`
+#             nor `_neigh_pq` is used.
+# * `D = 2` — face is a 1-D segment with one local coord `p ∈ 1..N`.
+#             Orientation group is D₁ (2 elements: identity, reverse).
+#             Encoded by `o ∈ 0..1`. See `_neigh_p`.
+# * `D = 3` — face is a 2-D quad with `(p, q) ∈ 1..N²`. Orientation
+#             group is D₄ (8 elements). Encoded by `o ∈ 0..7`. See
+#             `_neigh_pq`.
 
 """
     _neigh_p(o, p, N) → p′
 
-D₁ orientation transform for 2D meshes: maps self's face-local `p` into
-the neighbour's `p` using 1-indexed coordinates in `1..N`.
+D₁ orientation transform for `Mesh{2}`: maps self's face-local `p`
+into the neighbour's `p` using 1-indexed coordinates in `1..N`.
 
 * `o = 0` — identity (`p′ = p`)
 * `o = 1` — reversal (`p′ = N + 1 − p`)

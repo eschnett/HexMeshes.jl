@@ -7,7 +7,7 @@
 # and the `(1, Nv)` / `(2, Ne)` vertex tables.
 
 """
-    make_line_mesh(::Type{T}, M::Int, x0, x1) → LineMesh{T}
+    make_uniform_line(::Type{T}, M::Int, x0, x1) → Mesh{1, T}
 
 Uniform 1D mesh of `M` line elements on the interval `[x0, x1]`.
 Element `e ∈ 1..M` runs from `x = x0 + (e-1)·h` to `x = x0 + e·h`,
@@ -21,10 +21,10 @@ right endpoint.
 * Face 2 (+x) of element `M` — tagged `Int8(2)`.
 
 These are the natural defaults for Dirichlet enforcement at the two
-endpoints; downstream code can overwrite `mesh.bdry` for other BCs
-(e.g. Sommerfeld) just as in the 3D cubical mesh.
+endpoints; downstream code can overwrite `mesh.conn.bdry` for other BCs
+(e.g. Sommerfeld) just as in the 3D uniform hex mesh.
 """
-function make_line_mesh(::Type{T}, M::Int, x0, x1) where {T}
+function make_uniform_line(::Type{T}, M::Int, x0, x1) where {T}
     @assert M ≥ 1
     Ne = M
     Nv = M + 1
@@ -70,6 +70,23 @@ function make_line_mesh(::Type{T}, M::Int, x0, x1) where {T}
         end
     end
 
-    return LineMesh{T}(Ne, neighbour, neighbour_face, orientation, bdry,
-                       vertex_coords, vertex_idx)
+    # Patch metadata: single Cubic patch covering [x0, x1].
+    patch_desc = [PatchDesc(PatchCubic{1, T}((M,), (T(x0),), (T(x1),)))]
+    patch_id   = fill(Int32(1), Ne)
+    patch_idx  = Matrix{Int32}(undef, 1, Ne)
+    for e in 1:Ne
+        patch_idx[1, e] = Int32(e)
+    end
+    patch_element_offset = [0, Ne]
+
+    return Mesh{1, T}(Ne, neighbour, neighbour_face, orientation, bdry,
+                       vertex_coords, vertex_idx;
+                       patch_id              = patch_id,
+                       patch_idx             = patch_idx,
+                       patch_desc            = patch_desc,
+                       patch_element_offset  = patch_element_offset)
 end
+
+# Deprecated alias. New code should call `make_uniform_line`.
+Base.@deprecate make_line_mesh(::Type{T}, M::Int, x0, x1) where {T} (
+    make_uniform_line(T, M, x0, x1))
