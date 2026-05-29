@@ -1,0 +1,5 @@
+[deps]
+HexMeshes = "6a780a60-7728-4ca8-aa44-e8f4e6fd1153"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
