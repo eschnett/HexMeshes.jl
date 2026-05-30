@@ -9,7 +9,8 @@
 # unified D-generic skeleton machinery in `skeleton.jl`.
 
 """
-    make_uniform_quad(::Type{T}, Mx::Int, My::Int, x0, x1) → Mesh{2, T}
+    make_uniform_quad(::Type{T}, Mx::Int, My::Int, x0, x1;
+                      periodic = (false, false)) → Mesh{2, T}
 
 Uniform 2D mesh of `Mx · My` quadrilateral elements on the square
 `[x0, x1]²`. Vertices are arranged on a regular `(Mx+1) × (My+1)`
@@ -22,9 +23,18 @@ grid; each element's four corners are stored in Gmsh-canonical order
 * Face 2 (+x): elements with `mx = Mx`, tagged `Int8(2)`
 * Face 3 (−y): elements with `my = 1`, tagged `Int8(3)`
 * Face 4 (+y): elements with `my = My`, tagged `Int8(4)`
+
+`periodic` accepts a single `Bool` (applied to both axes) or a 2-tuple
+`(px, py)`. Periodic axes have their outer faces wired into a torus
+topology (`bdry == 0`, `neighbour` wraps around modulo the axis
+count) while vertex coordinates stay at their physical positions.
 """
-function make_uniform_quad(::Type{T}, Mx::Int, My::Int, x0, x1) where {T}
+function make_uniform_quad(::Type{T}, Mx::Int, My::Int, x0, x1;
+                            periodic = (false, false)) where {T}
     @assert Mx ≥ 1 && My ≥ 1
+    per = periodic isa Bool ? (periodic, periodic) : periodic
+    @assert length(per) == 2
+    px, py = per
     Ne = Mx * My
     hx = (T(x1) - T(x0)) / T(Mx)
     hy = (T(x1) - T(x0)) / T(My)
@@ -62,36 +72,56 @@ function make_uniform_quad(::Type{T}, Mx::Int, My::Int, x0, x1) where {T}
         e = eid(mx, my)
         # Face 1 (−x)
         if mx == 1
-            neighbour[1, e]      = Int32(0)
-            neighbour_face[1, e] = Int8(0)
-            bdry[1, e]           = Int8(1)
+            if px
+                neighbour[1, e]      = Int32(eid(Mx, my))
+                neighbour_face[1, e] = Int8(2)
+            else
+                neighbour[1, e]      = Int32(0)
+                neighbour_face[1, e] = Int8(0)
+                bdry[1, e]           = Int8(1)
+            end
         else
             neighbour[1, e]      = Int32(eid(mx - 1, my))
             neighbour_face[1, e] = Int8(2)
         end
         # Face 2 (+x)
         if mx == Mx
-            neighbour[2, e]      = Int32(0)
-            neighbour_face[2, e] = Int8(0)
-            bdry[2, e]           = Int8(2)
+            if px
+                neighbour[2, e]      = Int32(eid(1, my))
+                neighbour_face[2, e] = Int8(1)
+            else
+                neighbour[2, e]      = Int32(0)
+                neighbour_face[2, e] = Int8(0)
+                bdry[2, e]           = Int8(2)
+            end
         else
             neighbour[2, e]      = Int32(eid(mx + 1, my))
             neighbour_face[2, e] = Int8(1)
         end
         # Face 3 (−y)
         if my == 1
-            neighbour[3, e]      = Int32(0)
-            neighbour_face[3, e] = Int8(0)
-            bdry[3, e]           = Int8(3)
+            if py
+                neighbour[3, e]      = Int32(eid(mx, My))
+                neighbour_face[3, e] = Int8(4)
+            else
+                neighbour[3, e]      = Int32(0)
+                neighbour_face[3, e] = Int8(0)
+                bdry[3, e]           = Int8(3)
+            end
         else
             neighbour[3, e]      = Int32(eid(mx, my - 1))
             neighbour_face[3, e] = Int8(4)
         end
         # Face 4 (+y)
         if my == My
-            neighbour[4, e]      = Int32(0)
-            neighbour_face[4, e] = Int8(0)
-            bdry[4, e]           = Int8(4)
+            if py
+                neighbour[4, e]      = Int32(eid(mx, 1))
+                neighbour_face[4, e] = Int8(3)
+            else
+                neighbour[4, e]      = Int32(0)
+                neighbour_face[4, e] = Int8(0)
+                bdry[4, e]           = Int8(4)
+            end
         else
             neighbour[4, e]      = Int32(eid(mx, my + 1))
             neighbour_face[4, e] = Int8(3)
@@ -120,8 +150,8 @@ function make_uniform_quad(::Type{T}, Mx::Int, My::Int, x0, x1) where {T}
 end
 
 # Square shorthand: equal element count in both directions.
-make_uniform_quad(::Type{T}, M::Int, x0, x1) where {T} =
-    make_uniform_quad(T, M, M, x0, x1)
+make_uniform_quad(::Type{T}, M::Int, x0, x1; periodic = false) where {T} =
+    make_uniform_quad(T, M, M, x0, x1; periodic = periodic)
 
 # Deprecated alias. New code should call `make_uniform_quad`.
 Base.@deprecate make_quad_mesh(::Type{T}, Mx::Int, My::Int, x0, x1) where {T} (

@@ -1,12 +1,22 @@
 """
-    make_uniform_hex(::Type{T}, Mx::Int, My::Int, Mz::Int, x0, x1) → Mesh{3, T}
-    make_uniform_hex(::Type{T}, M::Int, x0, x1)                   → Mesh{3, T}
+    make_uniform_hex(::Type{T}, Mx::Int, My::Int, Mz::Int, x0, x1;
+                     periodic = (false, false, false)) → Mesh{3, T}
+    make_uniform_hex(::Type{T}, M::Int, x0, x1; periodic = false) → Mesh{3, T}
 
 Uniform 3D mesh of axis-aligned hexahedral elements on the cube
 `[x0, x1]³`, with `Mx · My · Mz` (or `M³` for the equal-count
 shorthand) elements. Backed by the skeleton-based build over a single
-`PatchCubic{3, T}` with all six faces tagged as domain boundary
-`1..6` (matching the face index ordering).
+`PatchCubic{3, T}`.
+
+Non-periodic axes have their two outer faces tagged as domain boundary
+(face indices `1..6` matching `(-x, +x, -y, +y, -z, +z)`). Axes flagged
+periodic have their two outer faces wired as `PeriodicLink`s into a
+torus topology — opposite faces become topological neighbours
+(`bdry == 0`, `neighbour` pointing across the seam) while their
+vertices stay at their distinct physical positions.
+
+The `periodic` kwarg accepts either a single `Bool` (applied to all
+three axes) or a 3-tuple of `Bool`s indexed by axis `(x, y, z)`.
 
 Element ordering is column-major over `(mx, my, mz)`:
 
@@ -14,23 +24,32 @@ Element ordering is column-major over `(mx, my, mz)`:
 
 `orientation` is identically zero (axis-aligned, single patch).
 """
-function make_uniform_hex(::Type{T}, Mx::Int, My::Int, Mz::Int, x0, x1) where {T}
+function make_uniform_hex(::Type{T}, Mx::Int, My::Int, Mz::Int, x0, x1;
+                            periodic = (false, false, false)) where {T}
     @assert Mx ≥ 1 && My ≥ 1 && Mz ≥ 1
+    per = periodic isa Bool ? (periodic, periodic, periodic) : periodic
+    @assert length(per) == 3
     cubic = PatchCubic{3, T}((Mx, My, Mz),
                               (T(x0), T(x0), T(x0)),
                               (T(x1), T(x1), T(x1)))
     patch = PatchDesc(cubic)
     faces = Matrix{FaceLink}(undef, 6, 1)
     for f in 1:6
-        faces[f, 1] = boundary_link(f)
+        axis = (f + 1) >> 1                  # 1, 1, 2, 2, 3, 3
+        opp  = isodd(f) ? f + 1 : f - 1      # face-axis opposite end
+        if per[axis]
+            faces[f, 1] = periodic_link(1, opp, 0)
+        else
+            faces[f, 1] = boundary_link(f)
+        end
     end
     skel = SkeletonMesh{3, T}([patch], faces)
     return _skeleton_to_mesh(skel)
 end
 
 # Cubic convenience: equal element count in each direction.
-make_uniform_hex(::Type{T}, M::Int, x0, x1) where {T} =
-    make_uniform_hex(T, M, M, M, x0, x1)
+make_uniform_hex(::Type{T}, M::Int, x0, x1; periodic = false) where {T} =
+    make_uniform_hex(T, M, M, M, x0, x1; periodic = periodic)
 
 # Deprecated aliases. New code should call `make_uniform_hex`.
 Base.@deprecate make_cubical_mesh(::Type{T}, Mx::Int, My::Int, Mz::Int, x0, x1) where {T} (

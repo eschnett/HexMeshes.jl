@@ -7,7 +7,7 @@
 # and the `(1, Nv)` / `(2, Ne)` vertex tables.
 
 """
-    make_uniform_line(::Type{T}, M::Int, x0, x1) → Mesh{1, T}
+    make_uniform_line(::Type{T}, M::Int, x0, x1; periodic = false) → Mesh{1, T}
 
 Uniform 1D mesh of `M` line elements on the interval `[x0, x1]`.
 Element `e ∈ 1..M` runs from `x = x0 + (e-1)·h` to `x = x0 + e·h`,
@@ -23,8 +23,12 @@ right endpoint.
 These are the natural defaults for Dirichlet enforcement at the two
 endpoints; downstream code can overwrite `mesh.conn.bdry` for other BCs
 (e.g. Sommerfeld) just as in the 3D uniform hex mesh.
+
+If `periodic = true`, the two outer faces are wired into a ring
+(`bdry == 0`, neighbour wraps around modulo `M`); the endpoint
+vertices remain distinct in `vertex_coords`.
 """
-function make_uniform_line(::Type{T}, M::Int, x0, x1) where {T}
+function make_uniform_line(::Type{T}, M::Int, x0, x1; periodic::Bool = false) where {T}
     @assert M ≥ 1
     Ne = M
     Nv = M + 1
@@ -52,18 +56,28 @@ function make_uniform_line(::Type{T}, M::Int, x0, x1) where {T}
     for e in 1:Ne
         # Face 1 (−x): neighbour is the element on the left.
         if e == 1
-            neighbour[1, e]      = Int32(0)
-            neighbour_face[1, e] = Int8(0)
-            bdry[1, e]           = Int8(1)
+            if periodic
+                neighbour[1, e]      = Int32(Ne)
+                neighbour_face[1, e] = Int8(2)
+            else
+                neighbour[1, e]      = Int32(0)
+                neighbour_face[1, e] = Int8(0)
+                bdry[1, e]           = Int8(1)
+            end
         else
             neighbour[1, e]      = Int32(e - 1)
             neighbour_face[1, e] = Int8(2)
         end
         # Face 2 (+x): neighbour is the element on the right.
         if e == Ne
-            neighbour[2, e]      = Int32(0)
-            neighbour_face[2, e] = Int8(0)
-            bdry[2, e]           = Int8(2)
+            if periodic
+                neighbour[2, e]      = Int32(1)
+                neighbour_face[2, e] = Int8(1)
+            else
+                neighbour[2, e]      = Int32(0)
+                neighbour_face[2, e] = Int8(0)
+                bdry[2, e]           = Int8(2)
+            end
         else
             neighbour[2, e]      = Int32(e + 1)
             neighbour_face[2, e] = Int8(1)

@@ -228,12 +228,23 @@ end
 # ----- Internal skeleton types ---------------------------------------
 
 # `FaceLink` describes one entry in a skeleton's `(2D, npatches)`
-# face-connectivity table. Two flavours selected by `kind`: `InteriorLink`
-# carries `(neigh_patch, neigh_face, orientation)`; `BoundaryLink`
-# carries only `boundary_tag ∈ 1..127`.
+# face-connectivity table. Three flavours selected by `kind`:
+#   * `InteriorLink`  — neighbouring patch face; vertices on the seam
+#                        are *deduplicated* with the neighbour.
+#   * `BoundaryLink`  — domain boundary; tagged with `boundary_tag`.
+#   * `PeriodicLink`  — topological link to (neigh_patch, neigh_face)
+#                        *without* vertex deduplication. Used to wire
+#                        opposite faces of a single patch into a torus
+#                        topology while keeping the two sides at their
+#                        physical (distinct) coordinates. From the
+#                        kernel's perspective a periodic face is
+#                        indistinguishable from an interior face
+#                        (`bdry == 0`, `neighbour` points across the
+#                        seam).
 @enum FaceLinkKind::Int8 begin
     InteriorLink = 1
     BoundaryLink = 2
+    PeriodicLink = 3
 end
 
 struct FaceLink
@@ -248,6 +259,8 @@ interior_link(np::Integer, nf::Integer, o::Integer) =
     FaceLink(InteriorLink, Int(np), Int(nf), Int8(o), Int8(0))
 boundary_link(tag::Integer) =
     FaceLink(BoundaryLink, 0, 0, Int8(0), Int8(tag))
+periodic_link(np::Integer, nf::Integer, o::Integer) =
+    FaceLink(PeriodicLink, Int(np), Int(nf), Int8(o), Int8(0))
 
 """
     SkeletonMesh{D, T}
