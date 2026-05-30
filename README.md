@@ -6,7 +6,7 @@ squares) in 2d. "Conforming" means that the cells' faces match up
 nicely.
 
 [![CI](https://github.com/eschnett/HexMeshes.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/eschnett/HexMeshes.jl/actions/workflows/CI.yml)
-[![Documentation](https://github.com/eschnett/HexMeshes.jl/actions/workflows/docs.yml/badge.svg)](https://eschnett.github.com/HexMeshes.jl/dev/)
+[![Documentation](https://github.com/eschnett/HexMeshes.jl/actions/workflows/docs.yml/badge.svg)](https://eschnett.github.io/HexMeshes.jl/dev/)
 
 ## Details
 
