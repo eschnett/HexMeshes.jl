@@ -5,6 +5,8 @@ hexahedral (distorted cubes) in 3d and quadrilateral (distorted
 squares) in 2d. "Conforming" means that the cells' faces match up
 nicely.
 
+[![CI](https://github.com/eschnett/HexMeshes.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/eschnett/HexMeshes.jl/actions/workflows/CI.yml)
+
 ## Details
 
 This package provides functions to construct meshes from skeletons. It

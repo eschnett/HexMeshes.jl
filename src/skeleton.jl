@@ -358,15 +358,42 @@ Cardinality of the orientation group: 2 for D = 2 (D₁), 8 for D = 3 (D₄).
 #   D = 2: 1 tangent → D₁ group (o ∈ 0..1).
 #   D = 3: 2 tangents → D₄ group (o ∈ 0..7).
 
-# 0-indexed vertex coords, single tangent (used for D = 2 meshes)
+"""
+    _neigh_p_vertex(o, p, Mt) → p′
+
+D₁ orientation transform on a single 0-indexed vertex coordinate
+`p ∈ 0..Mt`, used for `Mesh{2}` face skeletons. `o = 0` is the
+identity (`p′ = p`); `o = 1` is the reversal (`p′ = Mt − p`).
+
+The cell-indexed analog is [`_neigh_p_cell`](@ref) (range `1..Mt`);
+the runtime kernel variant operating on per-element 1-indexed face
+nodes is `HexMeshes._neigh_p`.
+"""
 @inline _neigh_p_vertex(o::Integer, p::Integer, Mt::Integer) =
     o == 0 ? p : (Mt - p)
 
-# 1-indexed cell coords, single tangent
+"""
+    _neigh_p_cell(o, b, Mt) → b′
+
+D₁ orientation transform on a single 1-indexed cell coordinate
+`b ∈ 1..Mt`. The vertex-indexed analog is [`_neigh_p_vertex`](@ref).
+"""
 @inline _neigh_p_cell(o::Integer, b::Integer, Mt::Integer) =
     o == 0 ? b : (Mt + 1 - b)
 
-# 0-indexed vertex coords, two tangents (D = 3, D₄)
+"""
+    _neigh_pq_vertex(o, p, q, Mt1, Mt2) → (p′, q′)
+
+D₄ orientation transform on a pair of 0-indexed vertex coordinates
+`(p, q) ∈ 0..Mt1 × 0..Mt2`, used for `Mesh{3}` face skeletons. The
+eight elements `o ∈ 0..7` enumerate the four rotations and four
+reflections of the square. `o = 0` is the identity; `o = 4..7` are
+the reflections.
+
+The cell-indexed analog is [`_neigh_pq_cell`](@ref); the runtime
+kernel variant operating on per-element 1-indexed face nodes is
+`HexMeshes._neigh_pq`.
+"""
 @inline function _neigh_pq_vertex(o::Integer, p::Integer, q::Integer,
                                     Mt1::Integer, Mt2::Integer)
     if     o == 0;  return (p,        q       )
@@ -380,7 +407,13 @@ Cardinality of the orientation group: 2 for D = 2 (D₁), 8 for D = 3 (D₄).
     end
 end
 
-# 1-indexed cell coords, two tangents
+"""
+    _neigh_pq_cell(o, b, c, Mt1, Mt2) → (b′, c′)
+
+D₄ orientation transform on a pair of 1-indexed cell coordinates
+`(b, c) ∈ 1..Mt1 × 1..Mt2`. The vertex-indexed analog is
+[`_neigh_pq_vertex`](@ref).
+"""
 @inline function _neigh_pq_cell(o::Integer, b::Integer, c::Integer,
                                   Mt1::Integer, Mt2::Integer)
     if     o == 0;  return (b,             c            )
