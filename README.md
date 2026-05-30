@@ -25,3 +25,14 @@ mesh*. Currently supported mesh types are
 - cubed cube
 - inflated cube
 and their 2d equivalents.
+
+## 2D mesh examples
+
+### Uniform quad mesh
+![Uniform quad](docs/src/figures/mesh_uniform_quad.png)
+
+### Cubed square mesh
+![Cubed square](docs/src/figures/mesh_cubed_square.png)
+
+### Inflated square mesh
+![Inflated square](docs/src/figures/mesh_inflated_square.png)
