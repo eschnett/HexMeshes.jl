@@ -52,11 +52,89 @@ should use the trilinear path for those.
         return _ppj_shell_3d(pd.shell, idx, ξ, η, ζ)
     elseif k === WarpedCubic
         return _ppj_warped_cubic_3d(pd.warped_cubic, idx, ξ, η, ζ)
+    elseif k === Wedge
+        return _ppj_wedge_3d(pd.wedge, idx, ξ, η, ζ)
     else
         error("_patch_point_and_jac: PatchDesc.kind must be Inflation, " *
-              "Shell, or WarpedCubic; got $(k). Use the trilinear path " *
-              "for Cubic / Wedge.")
+              "Shell, WarpedCubic, or Wedge; got $(k). Use the trilinear " *
+              "path for Cubic.")
     end
+end
+
+# Analytic per-node position + Jacobian for a `PatchWedge{3, T}`.
+# Parametric map (matches `_vert_wedge` 3D in skeleton.jl):
+#   r(a) = R1 · (R2/R1)^a
+#   dir = 1:  P = ( r,    b·r,  c·r)
+#   dir = 2:  P = (−r,    b·r,  c·r)
+#   dir = 3:  P = ( b·r,   r,   c·r)
+#   dir = 4:  P = ( b·r, −r,    c·r)
+#   dir = 5:  P = ( b·r,  c·r,   r)
+#   dir = 6:  P = ( b·r,  c·r, −r)
+# Element-reference Jacobian: differentiate w.r.t. (a, b, c) and scale
+# each column by (da, db, dc) = element parameter widths.
+@inline function _ppj_wedge_3d(w::PatchWedge{3, T},
+                                 idx::NTuple{3, <:Integer},
+                                 ξ::T, η::T, ζ::T) where {T}
+    a_lo, a_hi = _elem_sub_range(w.a_lo, w.a_hi, idx[1], w.dims[1])
+    b_lo, b_hi = _elem_sub_range(w.b_lo, w.b_hi, idx[2], w.dims[2])
+    c_lo, c_hi = _elem_sub_range(w.c_lo, w.c_hi, idx[3], w.dims[3])
+
+    da = a_hi - a_lo;  db = b_hi - b_lo;  dc = c_hi - c_lo
+    a  = a_lo + da * ξ
+    b  = b_lo + db * η
+    c  = c_lo + dc * ζ
+
+    α     = w.R2 / w.R1
+    r     = w.R1 * α^a
+    log_α = log(α)
+    dr_da = r * log_α
+
+    dir = w.dir
+    # (Px, Py, Pz) and the three columns of the Jacobian w.r.t. (a, b, c).
+    if dir == Int8(1)
+        # P = (r, b·r, c·r)
+        Px = r;          Py = b * r;      Pz = c * r
+        dPa_x = dr_da;   dPa_y = b * dr_da; dPa_z = c * dr_da
+        dPb_x = zero(T); dPb_y = r;       dPb_z = zero(T)
+        dPc_x = zero(T); dPc_y = zero(T); dPc_z = r
+    elseif dir == Int8(2)
+        # P = (−r, b·r, c·r)
+        Px = -r;         Py = b * r;      Pz = c * r
+        dPa_x = -dr_da;  dPa_y = b * dr_da; dPa_z = c * dr_da
+        dPb_x = zero(T); dPb_y = r;       dPb_z = zero(T)
+        dPc_x = zero(T); dPc_y = zero(T); dPc_z = r
+    elseif dir == Int8(3)
+        # P = (b·r, r, c·r)
+        Px = b * r;      Py = r;          Pz = c * r
+        dPa_x = b * dr_da; dPa_y = dr_da; dPa_z = c * dr_da
+        dPb_x = r;       dPb_y = zero(T); dPb_z = zero(T)
+        dPc_x = zero(T); dPc_y = zero(T); dPc_z = r
+    elseif dir == Int8(4)
+        # P = (b·r, −r, c·r)
+        Px = b * r;      Py = -r;         Pz = c * r
+        dPa_x = b * dr_da; dPa_y = -dr_da; dPa_z = c * dr_da
+        dPb_x = r;       dPb_y = zero(T); dPb_z = zero(T)
+        dPc_x = zero(T); dPc_y = zero(T); dPc_z = r
+    elseif dir == Int8(5)
+        # P = (b·r, c·r, r)
+        Px = b * r;      Py = c * r;      Pz = r
+        dPa_x = b * dr_da; dPa_y = c * dr_da; dPa_z = dr_da
+        dPb_x = r;       dPb_y = zero(T); dPb_z = zero(T)
+        dPc_x = zero(T); dPc_y = r;       dPc_z = zero(T)
+    else  # dir == 6
+        # P = (b·r, c·r, −r)
+        Px = b * r;      Py = c * r;      Pz = -r
+        dPa_x = b * dr_da; dPa_y = c * dr_da; dPa_z = -dr_da
+        dPb_x = r;       dPb_y = zero(T); dPb_z = zero(T)
+        dPc_x = zero(T); dPc_y = r;       dPc_z = zero(T)
+    end
+
+    J = SMatrix{3, 3, T}(
+        dPa_x * da, dPa_y * da, dPa_z * da,    # column 1: ∂/∂ξ_ref
+        dPb_x * db, dPb_y * db, dPb_z * db,    # column 2: ∂/∂η_ref
+        dPc_x * dc, dPc_y * dc, dPc_z * dc)    # column 3: ∂/∂ζ_ref
+    P = SVector{3, T}(Px, Py, Pz)
+    return P, J
 end
 
 # WarpedCubic — composition of (a) affine element-reference → patch
@@ -221,10 +299,63 @@ Inflation- or Shell-kind 2D patch. Errors if `pd.kind` is `Cubic` or
         return _ppj_inflation_2d(pd.inflation, idx, ξ, η)
     elseif k === Shell
         return _ppj_shell_2d(pd.shell, idx, ξ, η)
+    elseif k === Wedge
+        return _ppj_wedge_2d(pd.wedge, idx, ξ, η)
     else
-        error("_patch_point_and_jac_2d: PatchDesc.kind must be Inflation or " *
-              "Shell; got $(k). Use the bilinear path for Cubic / Wedge.")
+        error("_patch_point_and_jac_2d: PatchDesc.kind must be Inflation, " *
+              "Shell, or Wedge; got $(k). Use the bilinear path for Cubic.")
     end
+end
+
+# Analytic per-node position + Jacobian for a `PatchWedge{2, T}`.
+# Parametric map (matches `_vert_wedge` 2D in skeleton.jl):
+#   r(a) = R1 · (R2/R1)^a
+#   dir = 1 (+x):  P = ( r,    b·r)
+#   dir = 2 (−x):  P = (−r,    b·r)
+#   dir = 3 (+y):  P = ( b·r,   r)
+#   dir = 4 (−y):  P = ( b·r, −r)
+@inline function _ppj_wedge_2d(w::PatchWedge{2, T},
+                                 idx::NTuple{2, <:Integer},
+                                 ξ::T, η::T) where {T}
+    a_lo, a_hi = _elem_sub_range(w.a_lo, w.a_hi, idx[1], w.dims[1])
+    b_lo, b_hi = _elem_sub_range(w.b_lo, w.b_hi, idx[2], w.dims[2])
+
+    da = a_hi - a_lo;  db = b_hi - b_lo
+    a  = a_lo + da * ξ
+    b  = b_lo + db * η
+
+    α     = w.R2 / w.R1
+    r     = w.R1 * α^a
+    log_α = log(α)
+    dr_da = r * log_α
+
+    dir = w.dir
+    if dir == Int8(1)
+        # P = (r, b·r)
+        Px = r;          Py = b * r
+        dPa_x = dr_da;   dPa_y = b * dr_da
+        dPb_x = zero(T); dPb_y = r
+    elseif dir == Int8(2)
+        # P = (−r, b·r)
+        Px = -r;         Py = b * r
+        dPa_x = -dr_da;  dPa_y = b * dr_da
+        dPb_x = zero(T); dPb_y = r
+    elseif dir == Int8(3)
+        # P = (b·r, r)
+        Px = b * r;      Py = r
+        dPa_x = b * dr_da; dPa_y = dr_da
+        dPb_x = r;       dPb_y = zero(T)
+    else  # dir == 4
+        # P = (b·r, −r)
+        Px = b * r;      Py = -r
+        dPa_x = b * dr_da; dPa_y = -dr_da
+        dPb_x = r;       dPb_y = zero(T)
+    end
+
+    J = SMatrix{2, 2, T}(dPa_x * da, dPa_y * da,
+                          dPb_x * db, dPb_y * db)
+    P = SVector{2, T}(Px, Py)
+    return P, J
 end
 
 @inline function _ppj_inflation_2d(pi::PatchInflation{2, T},

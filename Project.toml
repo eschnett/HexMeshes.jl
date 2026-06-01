@@ -1,6 +1,6 @@
 name = "HexMeshes"
 uuid = "6a780a60-7728-4ca8-aa44-e8f4e6fd1153"
-version = "1.2.0"
+version = "1.2.1"
 authors = ["Erik Schnetter <schnetter@gmail.com>"]
 
 [deps]
