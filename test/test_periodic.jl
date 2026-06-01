@@ -166,4 +166,56 @@ end
         @test mesh.vertex_coords[1, v_high_plus_x]  ≈ 1.0
         @test v_low_minus_x != v_high_plus_x
     end
+
+    # ───────────────────────────────────────────────────────────────────
+    # Warped periodic uniform-hex mesh — `PatchWarpedCubic`.
+    # The warp adds a sinusoidal coordinate transformation on top of
+    # the standard periodic cube. Useful as a diagnostic for
+    # curvilinear behaviour without outer boundaries in the way.
+
+    @testset "make_warped_uniform_hex at A = 0 matches make_uniform_hex" begin
+        T = Float64
+        m_uniform = make_uniform_hex(T, 3, 3, 3, 0.0, 1.0; periodic = true)
+        m_warped  = make_warped_uniform_hex(T, 3, 3, 3, 0.0, 1.0, 0.0;
+                                              periodic = true)
+        @test m_uniform.Ne == m_warped.Ne
+        @test m_uniform.vertex_coords ≈ m_warped.vertex_coords
+        @test m_uniform.conn.neighbour       == m_warped.conn.neighbour
+        @test m_uniform.conn.neighbour_face  == m_warped.conn.neighbour_face
+        @test m_uniform.conn.orientation     == m_warped.conn.orientation
+        @test m_uniform.conn.bdry            == m_warped.conn.bdry
+        # The warped patch carries a different `PatchKind` tag but the
+        # mesh-level connectivity is identical.
+        @test m_warped.patch_desc[1].kind === WarpedCubic
+        @test m_warped.patch_desc[1].warped_cubic.warp_kind === :diagonal
+    end
+
+    @testset "make_warped_uniform_hex at A > 0 perturbs vertex coords" begin
+        T = Float64
+        m_uniform = make_uniform_hex(T, 3, 3, 3, 0.0, 1.0; periodic = true)
+        m_warped  = make_warped_uniform_hex(T, 3, 3, 3, 0.0, 1.0, 0.05;
+                                              periodic = true)
+        @test m_uniform.Ne == m_warped.Ne
+        # Topology unchanged.
+        @test m_uniform.conn.neighbour      == m_warped.conn.neighbour
+        @test m_uniform.conn.neighbour_face == m_warped.conn.neighbour_face
+        @test m_uniform.conn.orientation    == m_warped.conn.orientation
+        @test m_uniform.conn.bdry           == m_warped.conn.bdry
+        # Vertex coords are perturbed.
+        @test maximum(abs, m_uniform.vertex_coords .- m_warped.vertex_coords) > 0.01
+        @test maximum(abs, m_uniform.vertex_coords .- m_warped.vertex_coords) < 0.06
+    end
+
+    @testset "make_warped_uniform_hex: :coupled warp builds" begin
+        T = Float64
+        m = make_warped_uniform_hex(T, 3, 3, 3, 0.0, 1.0, 0.05;
+                                      periodic = true, warp_kind = :coupled)
+        @test m.patch_desc[1].kind === WarpedCubic
+        @test m.patch_desc[1].warped_cubic.warp_kind === :coupled
+        # Periodicity at corners must hold under both warp kinds, so
+        # opposite vertices at (0, …) and (L, …) end up at coords
+        # differing by exactly L in the warped axis (the warp
+        # vanishes at corners).
+        @test maximum(abs, m.vertex_coords) > 0.01
+    end
 end

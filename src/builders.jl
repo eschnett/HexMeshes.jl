@@ -51,6 +51,63 @@ end
 make_uniform_hex(::Type{T}, M::Int, x0, x1; periodic = false) where {T} =
     make_uniform_hex(T, M, M, M, x0, x1; periodic = periodic)
 
+"""
+    make_warped_uniform_hex(::Type{T}, Mx, My, Mz, x0, x1, A;
+                              periodic = (false, false, false),
+                              warp_kind::Symbol = :diagonal) → Mesh{3, T}
+    make_warped_uniform_hex(::Type{T}, M, x0, x1, A;
+                              periodic = false, warp_kind = :diagonal) → Mesh{3, T}
+
+Uniform 3D hex mesh on `[x0, x1]³` with a sinusoidal coordinate
+transformation applied (see [`PatchWarpedCubic`](@ref)).
+Useful as a diagnostic mesh for curvilinear behaviour on a periodic
+topology — every interior face is between two curvilinear cells with
+non-trivial `J`, with no outer boundary in the way.
+
+The `warp_kind` parameter is `:diagonal` (independent sinusoidal
+stretch per axis, diagonal `J`) or `:coupled` (cross-coupled axes,
+full 3×3 `J`).
+
+`A = 0` collapses to the standard `make_uniform_hex` map (the warp
+vanishes) — useful as a regression cross-check.
+
+Element ordering, face tag conventions, and `periodic` semantics all
+match `make_uniform_hex`. `orientation ≡ 0` (axis-aligned single
+patch).
+"""
+function make_warped_uniform_hex(::Type{T}, Mx::Int, My::Int, Mz::Int,
+                                   x0, x1, A;
+                                   periodic = (false, false, false),
+                                   warp_kind::Symbol = :diagonal) where {T}
+    @assert Mx ≥ 1 && My ≥ 1 && Mz ≥ 1
+    @assert warp_kind in (:diagonal, :coupled)
+    per = periodic isa Bool ? (periodic, periodic, periodic) : periodic
+    @assert length(per) == 3
+    wc = PatchWarpedCubic{3, T}((Mx, My, Mz),
+                                  (T(x0), T(x0), T(x0)),
+                                  (T(x1), T(x1), T(x1)),
+                                  T(A), warp_kind)
+    patch = PatchDesc(wc)
+    faces = Matrix{FaceLink}(undef, 6, 1)
+    for f in 1:6
+        axis = (f + 1) >> 1
+        opp  = isodd(f) ? f + 1 : f - 1
+        if per[axis]
+            faces[f, 1] = periodic_link(1, opp, 0)
+        else
+            faces[f, 1] = boundary_link(f)
+        end
+    end
+    skel = SkeletonMesh{3, T}([patch], faces)
+    return _skeleton_to_mesh(skel)
+end
+
+make_warped_uniform_hex(::Type{T}, M::Int, x0, x1, A;
+                          periodic = false,
+                          warp_kind::Symbol = :diagonal) where {T} =
+    make_warped_uniform_hex(T, M, M, M, x0, x1, A;
+                              periodic = periodic, warp_kind = warp_kind)
+
 # Deprecated aliases. New code should call `make_uniform_hex`.
 Base.@deprecate make_cubical_mesh(::Type{T}, Mx::Int, My::Int, Mz::Int, x0, x1) where {T} (
     make_uniform_hex(T, Mx, My, Mz, x0, x1))

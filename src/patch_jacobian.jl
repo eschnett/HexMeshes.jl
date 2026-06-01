@@ -50,9 +50,82 @@ should use the trilinear path for those.
         return _ppj_inflation_3d(pd.inflation, idx, ξ, η, ζ)
     elseif k === Shell
         return _ppj_shell_3d(pd.shell, idx, ξ, η, ζ)
+    elseif k === WarpedCubic
+        return _ppj_warped_cubic_3d(pd.warped_cubic, idx, ξ, η, ζ)
     else
-        error("_patch_point_and_jac: PatchDesc.kind must be Inflation or " *
-              "Shell; got $(k). Use the trilinear path for Cubic / Wedge.")
+        error("_patch_point_and_jac: PatchDesc.kind must be Inflation, " *
+              "Shell, or WarpedCubic; got $(k). Use the trilinear path " *
+              "for Cubic / Wedge.")
+    end
+end
+
+# WarpedCubic — composition of (a) affine element-reference → patch
+# parameter and (b) the warp. Differentiate the composition by hand
+# (the affine part is constant) so we don't drag ForwardDiff in here.
+@inline function _ppj_warped_cubic_3d(wc::PatchWarpedCubic{3, T},
+                                        idx::NTuple{3, <:Integer},
+                                        ξ::T, η::T, ζ::T) where {T}
+    # Element-local sub-range in patch coords.
+    x_lo_e_1, x_hi_e_1 = _elem_sub_range(wc.x_lo[1], wc.x_hi[1], idx[1], wc.dims[1])
+    x_lo_e_2, x_hi_e_2 = _elem_sub_range(wc.x_lo[2], wc.x_hi[2], idx[2], wc.dims[2])
+    x_lo_e_3, x_hi_e_3 = _elem_sub_range(wc.x_lo[3], wc.x_hi[3], idx[3], wc.dims[3])
+    d1 = x_hi_e_1 - x_lo_e_1
+    d2 = x_hi_e_2 - x_lo_e_2
+    d3 = x_hi_e_3 - x_lo_e_3
+    # Patch-space coord at this reference point.
+    a = x_lo_e_1 + d1 * ξ
+    b = x_lo_e_2 + d2 * η
+    c = x_lo_e_3 + d3 * ζ
+
+    # Warp: x = ξ_patch + A · sin(2π (ξ_patch − x_lo) / L) · [cos(…) for coupled].
+    L1 = wc.x_hi[1] - wc.x_lo[1]
+    L2 = wc.x_hi[2] - wc.x_lo[2]
+    L3 = wc.x_hi[3] - wc.x_lo[3]
+    ϕ1 = 2 * pi * (a - wc.x_lo[1]) / L1
+    ϕ2 = 2 * pi * (b - wc.x_lo[2]) / L2
+    ϕ3 = 2 * pi * (c - wc.x_lo[3]) / L3
+    A  = wc.amplitude
+
+    if wc.warp_kind === :diagonal
+        Px = a + A * sin(ϕ1)
+        Py = b + A * sin(ϕ2)
+        Pz = c + A * sin(ϕ3)
+        # ∂x_a/∂(patch a) — only diagonal nonzero.
+        dPx_da = one(T) + A * cos(ϕ1) * (2 * pi / L1)
+        dPy_db = one(T) + A * cos(ϕ2) * (2 * pi / L2)
+        dPz_dc = one(T) + A * cos(ϕ3) * (2 * pi / L3)
+        # Multiply by patch-coord-vs-reference-coord scaling (d1, d2, d3)
+        # to get ∂x/∂ξ_ref.
+        J = SMatrix{3, 3, T}(
+            dPx_da * d1, zero(T),     zero(T),       # column 1: ∂/∂ξ
+            zero(T),     dPy_db * d2, zero(T),       # column 2: ∂/∂η
+            zero(T),     zero(T),     dPz_dc * d3)   # column 3: ∂/∂ζ
+        return SVector{3, T}(Px, Py, Pz), J
+    else
+        # :coupled — x_a = ξ_a + A sin(ϕ_a) cos(ϕ_b), b = (a mod 3) + 1.
+        s1, s2, s3 = sin(ϕ1), sin(ϕ2), sin(ϕ3)
+        c1, c2, c3 = cos(ϕ1), cos(ϕ2), cos(ϕ3)
+        # x = a + A s1 c2;  y = b + A s2 c3;  z = c + A s3 c1.
+        Px = a + A * s1 * c2
+        Py = b + A * s2 * c3
+        Pz = c + A * s3 * c1
+        k1 = 2 * pi / L1; k2 = 2 * pi / L2; k3 = 2 * pi / L3
+        # Patch-coord Jacobian (with respect to a, b, c).
+        dPxda = one(T) + A * c1 * c2 * k1
+        dPxdb =          -A * s1 * s2 * k2
+        # dPxdc = 0
+        dPydb = one(T) + A * c2 * c3 * k2
+        dPydc =          -A * s2 * s3 * k3
+        # dPyda = 0
+        dPzdc = one(T) + A * c3 * c1 * k3
+        dPzda =          -A * s3 * s1 * k1
+        # dPzdb = 0
+        # Reference-coord Jacobian: column-major (∂x/∂ξ_ref, scaled).
+        J = SMatrix{3, 3, T}(
+            dPxda * d1, zero(T),    dPzda * d1,     # column 1: ∂/∂ξ
+            dPxdb * d2, dPydb * d2, zero(T),        # column 2: ∂/∂η
+            zero(T),    dPydc * d3, dPzdc * d3)     # column 3: ∂/∂ζ
+        return SVector{3, T}(Px, Py, Pz), J
     end
 end
 

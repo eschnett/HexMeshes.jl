@@ -135,8 +135,45 @@ function _patch_vertex_position(pd::PatchDesc{D, T},
         return _vert_wedge(pd.wedge, idx)
     elseif k === Inflation
         return _vert_inflation(pd.inflation, idx)
-    else  # Shell
+    elseif k === Shell
         return _vert_shell(pd.shell, idx)
+    else  # WarpedCubic
+        return _vert_warped_cubic(pd.warped_cubic, idx)
+    end
+end
+
+# WarpedCubic — works for any D. The 0-indexed `idx` lands at the
+# grid corner; we evaluate the sinusoidal warp at that reference point.
+@inline function _vert_warped_cubic(wc::PatchWarpedCubic{D, T},
+                                      idx::NTuple{D, <:Integer}) where {D, T}
+    ξ = ntuple(Val(D)) do d
+        s = T(idx[d]) / T(wc.dims[d])
+        return wc.x_lo[d] + (wc.x_hi[d] - wc.x_lo[d]) * s
+    end
+    return _warp_apply(wc, ξ)
+end
+
+# Pure function `ξ → x` implementing the warp. Made polymorphic so
+# ForwardDiff.Dual flows through cleanly when computing the Jacobian.
+@inline function _warp_apply(wc::PatchWarpedCubic{D, T},
+                               ξ::NTuple{D, S}) where {D, T, S}
+    A = wc.amplitude
+    if wc.warp_kind === :diagonal
+        return ntuple(Val(D)) do a
+            L_a = wc.x_hi[a] - wc.x_lo[a]
+            ϕ_a = 2 * pi * (ξ[a] - wc.x_lo[a]) / L_a
+            return ξ[a] + A * sin(ϕ_a)
+        end
+    else
+        # :coupled — cross-coupled axes.
+        return ntuple(Val(D)) do a
+            b = mod1(a + 1, D)
+            L_a = wc.x_hi[a] - wc.x_lo[a]
+            L_b = wc.x_hi[b] - wc.x_lo[b]
+            ϕ_a = 2 * pi * (ξ[a] - wc.x_lo[a]) / L_a
+            ϕ_b = 2 * pi * (ξ[b] - wc.x_lo[b]) / L_b
+            return ξ[a] + A * sin(ϕ_a) * cos(ϕ_b)
+        end
     end
 end
 

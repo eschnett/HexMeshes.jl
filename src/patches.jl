@@ -47,10 +47,11 @@ apply to 1D / 2D / 3D meshes, though in 1D only `Cubic` is used by
 the current builders.
 """
 @enum PatchKind::Int8 begin
-    Cubic     = 1
-    Wedge     = 2
-    Inflation = 3
-    Shell     = 4
+    Cubic       = 1
+    Wedge       = 2
+    Inflation   = 3
+    Shell       = 4
+    WarpedCubic = 5
 end
 
 """
@@ -128,6 +129,35 @@ struct PatchShell{D, T}
     R2   :: T
 end
 
+"""
+    PatchWarpedCubic{D, T}
+
+Axis-aligned box like `PatchCubic`, but with a smooth sinusoidal
+coordinate transformation applied. Used as a diagnostic mesh for
+curvilinear behaviour on a periodic topology — every node has a
+non-trivial Jacobian without involving outer boundaries.
+
+`warp_kind` selects the spatial pattern:
+
+* `:diagonal` — `x_a(ξ) = ξ_a + A · sin(2π (ξ_a − x_lo[a]) / L_a)`,
+  with `L_a = x_hi[a] − x_lo[a]`. Each axis is decoupled, so `J` is
+  diagonal but variable.
+* `:coupled` — `x_a(ξ) = ξ_a + A · sin(2π (ξ_a − x_lo[a]) / L_a) ·
+  cos(2π (ξ_b − x_lo[b]) / L_b)` with `b = (a mod D) + 1`. `J` is
+  full 3×3 (cross-coupled axes).
+
+Both maps satisfy `warp(ξ + L_a · ê_a) = warp(ξ) + L_a · ê_a`, so the
+periodic identification of opposite faces in the underlying topology
+is preserved. Invertibility requires `|A| < min(L_a) / (2π)`.
+"""
+struct PatchWarpedCubic{D, T}
+    dims      :: NTuple{D, Int}
+    x_lo      :: NTuple{D, T}
+    x_hi      :: NTuple{D, T}
+    amplitude :: T
+    warp_kind :: Symbol             # :diagonal or :coupled
+end
+
 # Internal zero-initialised dummy patches used to fill the unused
 # variants of `PatchDesc`. Not exported.
 @inline _dummy_cubic(::Type{T}, ::Val{D}) where {T, D} =
@@ -146,6 +176,11 @@ end
     (z = zero(T);
      PatchShell{D, T}(ntuple(_ -> 0, Val(D)), Int8(0),
                       z, z, z, z, z, z, z, z))
+@inline _dummy_warped_cubic(::Type{T}, ::Val{D}) where {T, D} =
+    PatchWarpedCubic{D, T}(ntuple(_ -> 0, Val(D)),
+                            ntuple(_ -> zero(T), Val(D)),
+                            ntuple(_ -> zero(T), Val(D)),
+                            zero(T), :diagonal)
 
 """
     PatchDesc{D, T}
@@ -175,38 +210,51 @@ Use [`dims`](@ref) / [`n_elements`](@ref) to read the active variant's
 structured-grid extent without manual branching.
 """
 struct PatchDesc{D, T}
-    kind      :: PatchKind
-    cubic     :: PatchCubic{D, T}
-    wedge     :: PatchWedge{D, T}
-    inflation :: PatchInflation{D, T}
-    shell     :: PatchShell{D, T}
+    kind         :: PatchKind
+    cubic        :: PatchCubic{D, T}
+    wedge        :: PatchWedge{D, T}
+    inflation    :: PatchInflation{D, T}
+    shell        :: PatchShell{D, T}
+    warped_cubic :: PatchWarpedCubic{D, T}
 end
 
 PatchDesc(c::PatchCubic{D, T}) where {D, T} =
     PatchDesc{D, T}(Cubic, c,
                     _dummy_wedge(T, Val(D)),
                     _dummy_inflation(T, Val(D)),
-                    _dummy_shell(T, Val(D)))
+                    _dummy_shell(T, Val(D)),
+                    _dummy_warped_cubic(T, Val(D)))
 
 PatchDesc(w::PatchWedge{D, T}) where {D, T} =
     PatchDesc{D, T}(Wedge,
                     _dummy_cubic(T, Val(D)), w,
                     _dummy_inflation(T, Val(D)),
-                    _dummy_shell(T, Val(D)))
+                    _dummy_shell(T, Val(D)),
+                    _dummy_warped_cubic(T, Val(D)))
 
 PatchDesc(i::PatchInflation{D, T}) where {D, T} =
     PatchDesc{D, T}(Inflation,
                     _dummy_cubic(T, Val(D)),
                     _dummy_wedge(T, Val(D)),
                     i,
-                    _dummy_shell(T, Val(D)))
+                    _dummy_shell(T, Val(D)),
+                    _dummy_warped_cubic(T, Val(D)))
 
 PatchDesc(s::PatchShell{D, T}) where {D, T} =
     PatchDesc{D, T}(Shell,
                     _dummy_cubic(T, Val(D)),
                     _dummy_wedge(T, Val(D)),
                     _dummy_inflation(T, Val(D)),
-                    s)
+                    s,
+                    _dummy_warped_cubic(T, Val(D)))
+
+PatchDesc(wc::PatchWarpedCubic{D, T}) where {D, T} =
+    PatchDesc{D, T}(WarpedCubic,
+                    _dummy_cubic(T, Val(D)),
+                    _dummy_wedge(T, Val(D)),
+                    _dummy_inflation(T, Val(D)),
+                    _dummy_shell(T, Val(D)),
+                    wc)
 
 """
     dims(pd::PatchDesc{D, T}) → NTuple{D, Int}
@@ -217,10 +265,11 @@ active variant.
 """
 @inline function dims(pd::PatchDesc{D, T}) where {D, T}
     k = pd.kind
-    return k === Cubic     ? pd.cubic.dims     :
-           k === Wedge     ? pd.wedge.dims     :
-           k === Inflation ? pd.inflation.dims :
-                              pd.shell.dims
+    return k === Cubic       ? pd.cubic.dims        :
+           k === Wedge       ? pd.wedge.dims        :
+           k === Inflation   ? pd.inflation.dims    :
+           k === Shell       ? pd.shell.dims        :
+                                pd.warped_cubic.dims
 end
 
 """

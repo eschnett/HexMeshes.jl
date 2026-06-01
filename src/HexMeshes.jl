@@ -91,8 +91,9 @@ export
     # `Cubic` / `Wedge` / `Inflation` / `Shell` are the four geometric
     # families a `PatchDesc{D, T}` may carry; constructors take one of
     # the variant types and zero-initialise the others.
-    PatchKind, Cubic, Wedge, Inflation, Shell,
-    PatchCubic, PatchWedge, PatchInflation, PatchShell, PatchDesc,
+    PatchKind, Cubic, Wedge, Inflation, Shell, WarpedCubic,
+    PatchCubic, PatchWedge, PatchInflation, PatchShell, PatchWarpedCubic,
+    PatchDesc,
     dims, n_elements,
     # Face-orientation group marker (`OrientationGroup{2}` = D₁,
     # `OrientationGroup{3}` = D₄). Type-only; documents the dispatch
@@ -102,6 +103,7 @@ export
     # `make_uniform_{line,quad,hex}`; `make_line_mesh` / `make_quad_mesh`
     # / `make_cubical_mesh` are deprecated aliases.
     make_uniform_line, make_uniform_quad, make_uniform_hex,
+    make_warped_uniform_hex,
     make_line_mesh, make_quad_mesh, make_cubical_mesh,
     make_cubed_square_mesh, make_inflated_square_mesh,
     make_cubed_cube_mesh, make_inflated_cube_mesh,
