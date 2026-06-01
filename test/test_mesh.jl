@@ -297,4 +297,106 @@ count_zero_neighbours(m::Mesh{3}) = count(==(0), m.conn.neighbour)
         @test isnan(global_to_patch(m.patch_desc[6], SVector{3, T}(0.7, 0.0, 0.0))[1])
     end
 
+    @testset "make_radial_shell_mesh: defaults, element counts, tag plumbing" begin
+        # 6-patch pure shell mesh covering R1 ≤ |x| ≤ R2. With default
+        # M_r heuristic at M=4, R1=0.3, R2=1.0:
+        #   h = (R2 - R1) / M = 0.175
+        #   M_r = round(Int, (R2 - R1) / h) = 4
+        #   Ne = 6 · M_r · M² = 6 · 4 · 16 = 384
+        T = Float64
+        R1 = 0.3; R2 = 1.0; M = 4
+        m = make_radial_shell_mesh(T, R1, R2, M)
+        @test m isa Mesh{3, T}
+        @test npatches(m) == 6
+        @test m.Ne == 6 * 4 * 16
+        # Every patch is a Shell.
+        @test all(pd.kind === Shell for pd in m.patch_desc)
+        # Linear radial spacing built into PatchShell — assert R1, R2
+        # came through unchanged.
+        for pd in m.patch_desc
+            @test pd.shell.R1 == R1
+            @test pd.shell.R2 == R2
+        end
+
+        # Default (outer_bc, inner_bc) = (:dirichlet, :excision):
+        #   outer face → tag 1, inner face → tag 8.
+        @test sort(unique(m.conn.bdry)) == Int8[0, 1, 8]
+        # Outer-tag count == inner-tag count == 6·M² (one tagged face
+        # per shell-patch radial-extreme element).
+        n_outer = count(==(Int8(1)), m.conn.bdry)
+        n_inner = count(==(Int8(8)), m.conn.bdry)
+        @test n_outer == 6 * M^2
+        @test n_inner == 6 * M^2
+
+        # Inner-sphere exactness: face-1 of every radial-innermost
+        # element lies on |x| = R1. Outer-sphere exactness: face-2 of
+        # every radial-outermost element lies on |x| = R2. Pick one
+        # vertex per face as a probe (all four corners are on the
+        # sphere by construction).
+        for e in 1:m.Ne
+            tag1 = m.conn.bdry[1, e]   # face-1 (inner)
+            tag2 = m.conn.bdry[2, e]   # face-2 (outer)
+            if tag1 == Int8(8)
+                # Face-1 corners are local vertex indices 1, 4, 5, 8.
+                for ℓ in (1, 4, 5, 8)
+                    v = m.vertex_idx[ℓ, e]
+                    r = sqrt(sum(abs2, m.vertex_coords[:, v]))
+                    @test isapprox(r, R1; atol = 1e-12)
+                end
+            end
+            if tag2 == Int8(1)
+                # Face-2 corners are local vertex indices 2, 3, 6, 7.
+                for ℓ in (2, 3, 6, 7)
+                    v = m.vertex_idx[ℓ, e]
+                    r = sqrt(sum(abs2, m.vertex_coords[:, v]))
+                    @test isapprox(r, R2; atol = 1e-12)
+                end
+            end
+        end
+
+        # Tangential shell-shell seams all use orientation 0 in this
+        # builder — `_INFLATION_NEIGHBOUR` was constructed so the D₄
+        # twist lives on the *cube-to-inflation* interfaces of the
+        # inflated cube, not on shell-shell ones. Confirms that.
+        @test all(==(Int8(0)), m.conn.orientation)
+
+        # Neighbour symmetry on every interior face.
+        for e in 1:m.Ne, f in 1:6
+            nb_e = m.conn.neighbour[f, e]
+            nb_e == 0 && continue
+            nb_f = m.conn.neighbour_face[f, e]
+            @test m.conn.neighbour[nb_f, nb_e] == e
+        end
+    end
+
+    @testset "make_radial_shell_mesh: BC kwarg → tag mapping" begin
+        T = Float64
+        # All nine pairs of (outer_bc, inner_bc) — assert the right
+        # tag values land in `bdry`.
+        for outer in (:dirichlet, :sommerfeld, :excision)
+            for inner in (:dirichlet, :sommerfeld, :excision)
+                m = make_radial_shell_mesh(T, 0.3, 1.0, 2;
+                                            outer_bc = outer,
+                                            inner_bc = inner)
+                expected_outer = outer === :dirichlet  ? Int8(1) :
+                                 outer === :sommerfeld ? Int8(7) :
+                                                          Int8(8)
+                expected_inner = inner === :dirichlet  ? Int8(2) :
+                                 inner === :sommerfeld ? Int8(7) :
+                                                          Int8(8)
+                tags = sort(unique(m.conn.bdry))
+                # Always contains 0 (interior). Outer/inner may collapse
+                # to the same value if both pick sommerfeld or excision.
+                @test 0 in tags
+                @test expected_outer in tags
+                @test expected_inner in tags
+            end
+        end
+        # :outflow alias is accepted and produces tag 8.
+        m_alias = make_radial_shell_mesh(T, 0.3, 1.0, 2; inner_bc = :outflow)
+        @test Int8(8) in m_alias.conn.bdry
+        m_alias_outer = make_radial_shell_mesh(T, 0.3, 1.0, 2; outer_bc = :outflow)
+        @test Int8(8) in m_alias_outer.conn.bdry
+    end
+
 end

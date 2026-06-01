@@ -55,6 +55,9 @@ according to `outer_bc`:
 
 * `:dirichlet` (default) — `bdry = 1`.
 * `:sommerfeld` — `bdry = 7` (first-order radiative absorbing BC).
+* `:excision` (alias `:outflow`) — `bdry = 8` (pure outflow / no SAT).
+  Rarely used for the inflated-cube outer boundary, but accepted for
+  consistency with `make_radial_shell_mesh`.
 
 The returned `Mesh{3, T}` has all four patch fields populated:
 `patch_desc` carries 13 `PatchDesc{3, T}` entries (one `Cubic` + six
@@ -75,8 +78,10 @@ function _inflated_cube_skeleton(::Type{T}, L::Real, R1::Real, R2::Real, M::Int;
                                    outer_bc::Symbol = :dirichlet) where {T}
     outer_bc_tag = outer_bc === :dirichlet ? Int8(1) :
                    outer_bc === :sommerfeld ? Int8(7) :
+                   (outer_bc === :excision || outer_bc === :outflow) ? Int8(8) :
                    error("_inflated_cube_skeleton: outer_bc must be " *
-                         ":dirichlet or :sommerfeld, got $(repr(outer_bc))")
+                         ":dirichlet, :sommerfeld, or :excision " *
+                         "(alias :outflow); got $(repr(outer_bc))")
     @assert M ≥ 1
     @assert L > 0
     @assert L * sqrt(3) < R1 "inner sphere R1 must enclose the cube corner (L·√3)"

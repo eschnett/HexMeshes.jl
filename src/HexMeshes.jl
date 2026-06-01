@@ -60,6 +60,7 @@ include("patch_jacobian.jl")
 # maps / locators live in `queries.jl` / `queries_2d.jl`.
 include("builders.jl")            # 3D `make_uniform_hex`, `make_cubed_cube_mesh`
 include("inflated_cube.jl")       # 3D `make_inflated_cube_mesh`
+include("radial_shell.jl")        # 3D `make_radial_shell_mesh` (BH excision)
 # 3D pure geometric maps: `trilinear_shape`/`_dshape`/`_map`/`_jacobian`.
 include("geometry.jl")
 # 3D host-side queries: `element_vertices`, `locate_point`,
@@ -107,6 +108,7 @@ export
     make_line_mesh, make_quad_mesh, make_cubical_mesh,
     make_cubed_square_mesh, make_inflated_square_mesh,
     make_cubed_cube_mesh, make_inflated_cube_mesh,
+    make_radial_shell_mesh,
     # Host-side queries
     element_vertices, locate_point, invert_element_map, interpolate_field,
     default_tol,
