@@ -82,6 +82,8 @@ include("geometry_2d.jl")
 include("builders_2d.jl")
 # 2D `make_inflated_square_mesh`.
 include("inflated_square.jl")
+# 2D `make_annulus_mesh` (pure shell ring; 2D analog of radial_shell).
+include("annulus.jl")
 # 2D host-side queries + 2D analytic patch maps.
 include("queries_2d.jl")
 
@@ -106,7 +108,7 @@ export
     make_uniform_line, make_uniform_quad, make_uniform_hex,
     make_warped_uniform_hex,
     make_line_mesh, make_quad_mesh, make_cubical_mesh,
-    make_cubed_square_mesh, make_inflated_square_mesh,
+    make_cubed_square_mesh, make_inflated_square_mesh, make_annulus_mesh,
     make_cubed_cube_mesh, make_inflated_cube_mesh,
     make_radial_shell_mesh,
     # Host-side queries

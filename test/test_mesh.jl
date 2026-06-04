@@ -399,4 +399,61 @@ count_zero_neighbours(m::Mesh{3}) = count(==(0), m.conn.neighbour)
         @test Int8(8) in m_alias_outer.conn.bdry
     end
 
+    @testset "make_annulus_mesh: 2D pure shell ring, tags, radii" begin
+        # 4-patch annulus covering R1 ≤ |x| ≤ R2 — the 2D analog of
+        # make_radial_shell_mesh. With M=4, R1=0.3, R2=1.0: M_r = M = 4,
+        # Ne = 4 · M_r · M = 4 · 4 · 4 = 64.
+        T = Float64
+        R1 = 0.3; R2 = 1.0; M = 4
+        m = make_annulus_mesh(T, R1, R2, M)
+        @test m isa Mesh{2, T}
+        @test length(m.patch_desc) == 4
+        @test m.Ne == 4 * 4 * 4
+        @test all(pd.kind === Shell for pd in m.patch_desc)
+        for pd in m.patch_desc
+            @test pd.shell.R1 == R1
+            @test pd.shell.R2 == R2
+        end
+
+        # Default (outer_bc, inner_bc) = (:sommerfeld, :excision):
+        #   outer face → tag 7, inner face → tag 8.
+        @test sort(unique(m.conn.bdry)) == Int8[0, 7, 8]
+        # One tagged face per radial-extreme element: 4·M each.
+        @test count(==(Int8(7)), m.conn.bdry) == 4 * M   # outer (sommerfeld)
+        @test count(==(Int8(8)), m.conn.bdry) == 4 * M   # inner (excision)
+
+        # Radius exactness via corner vertices. 2D face convention:
+        # face 1 = −a (inner radial) → corners 1,4; face 2 = +a (outer
+        # radial) → corners 2,3.
+        for e in 1:m.Ne
+            if m.conn.bdry[1, e] == Int8(8)
+                for ℓ in (1, 4)
+                    v = m.vertex_idx[ℓ, e]
+                    @test isapprox(hypot(m.vertex_coords[1, v],
+                                         m.vertex_coords[2, v]), R1; atol = 1e-12)
+                end
+            end
+            if m.conn.bdry[2, e] == Int8(7)
+                for ℓ in (2, 3)
+                    v = m.vertex_idx[ℓ, e]
+                    @test isapprox(hypot(m.vertex_coords[1, v],
+                                         m.vertex_coords[2, v]), R2; atol = 1e-12)
+                end
+            end
+        end
+
+        # Neighbour symmetry on every interior face; no inner-cube means
+        # exactly the inner+outer circles are boundaries.
+        for e in 1:m.Ne, f in 1:4
+            nb_e = m.conn.neighbour[f, e]
+            nb_e == 0 && continue
+            nb_f = m.conn.neighbour_face[f, e]
+            @test m.conn.neighbour[nb_f, nb_e] == e
+        end
+
+        # BC kwarg → tag mapping (outer :dirichlet → 1).
+        md = make_annulus_mesh(T, R1, R2, 2; outer_bc = :dirichlet)
+        @test sort(unique(md.conn.bdry)) == Int8[0, 1, 8]
+    end
+
 end
