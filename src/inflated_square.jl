@@ -78,11 +78,14 @@ function _inflated_square_skeleton(::Type{T}, L::Real, R1::Real, R2::Real,
     R2v = T(R2)
     h   = 2L / M
 
+    # Patch counts in Float64 (geometry-independent of `T`; MultiFloats
+    # have no `round(Int, ·)`).
+    Lf = Float64(L); R1f = Float64(R1); R2f = Float64(R2); hf = 2Lf / M
     Mi = M_i === nothing ?
-         max(1, round(Int, (R1 - (1 + sqrt(2))/2 * L) / h)) :
+         max(1, round(Int, (R1f - (1 + sqrt(2.0))/2 * Lf) / hf)) :
          M_i
     Ms = M_s === nothing ?
-         max(1, round(Int, (R2 - R1) / h)) :
+         max(1, round(Int, (R2f - R1f) / hf)) :
          M_s
     @assert Mi ≥ 1
     @assert Ms ≥ 1

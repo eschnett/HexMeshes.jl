@@ -198,7 +198,11 @@ function make_cubed_square_mesh(::Type{T}, M::Int, R::Real) where {T}
     @assert M ≥ 1
     @assert 0 < R < 1
     Rv = T(R)
-    L = max(1, round(Int, log(1/R) / log(1 + 2/M)))
+    # Patch count is geometry-independent of the element type; compute
+    # it in Float64 so the builder works for any `T` (e.g. MultiFloats,
+    # whose `round(Int, ·)` is undefined).
+    Rf = Float64(R)
+    L = max(1, round(Int, log(1/Rf) / log(1 + 2/M)))
     skel = _cubed_square_skeleton(T, M, L, Rv)
     return _skeleton_to_mesh(skel)
 end
