@@ -1,6 +1,6 @@
 # HexMeshes.jl
 
-Conforming meshes in in 1, 2, and 3 dimensions. The mesh cells are
+Conforming meshes in 1, 2, and 3 dimensions. The mesh cells are
 hexahedral (distorted cubes) in 3d and quadrilateral (distorted
 squares) in 2d. "Conforming" means that the cells' faces match up
 nicely.

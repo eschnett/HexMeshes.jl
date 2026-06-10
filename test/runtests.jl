@@ -7,4 +7,5 @@ using HexMeshes
     include("test_mesh_2d.jl")
     include("test_precision.jl")
     include("test_periodic.jl")
+    include("test_interp_grad.jl")
 end
