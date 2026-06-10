@@ -155,6 +155,35 @@ end
     end
 end
 
+# Per-direction inverse of the *Wedge* forward layout (`_vert_wedge` /
+# `_ppj_wedge_3d` / `patch_to_global`'s Wedge branch). Unlike
+# `_patch_direction_vec`, the Wedge map keeps its tangential
+# coordinates in fixed (x, y, z) order with no b/c swap on the
+# −x, +y, −z directions, so it needs its own inverse:
+#
+#   dir 1 (+x): P = ( r,   b·r, c·r)  →  r =  x,  b =  y/x,  c =  z/x
+#   dir 2 (−x): P = (−r,   b·r, c·r)  →  r = −x,  b = −y/x,  c = −z/x
+#   dir 3 (+y): P = (b·r,   r,  c·r)  →  r =  y,  b =  x/y,  c =  z/y
+#   dir 4 (−y): P = (b·r,  −r,  c·r)  →  r = −y,  b = −x/y,  c = −z/y
+#   dir 5 (+z): P = (b·r,  c·r,  r )  →  r =  z,  b =  x/z,  c =  y/z
+#   dir 6 (−z): P = (b·r,  c·r, −r )  →  r = −z,  b = −x/z,  c = −y/z
+@inline function _inverse_wedge_vec_3d(dir::Integer,
+                                        x::T, y::T, z::T) where {T}
+    if dir == 1                     # +x
+        return  x,  y / x,  z / x
+    elseif dir == 2                 # -x
+        return -x, -y / x, -z / x
+    elseif dir == 3                 # +y
+        return  y,  x / y,  z / y
+    elseif dir == 4                 # -y
+        return -y, -x / y, -z / y
+    elseif dir == 5                 # +z
+        return  z,  x / z,  y / z
+    else                            # -z
+        return -z, -x / z, -y / z
+    end
+end
+
 """
     patch_to_global(pd::PatchDesc{3, T}, ξ::SVector{3, T}) → SVector{3, T}
 
@@ -278,7 +307,7 @@ function global_to_patch(pd::PatchDesc{3, T}, p::SVector{3, T};
         return NaN_ξ
     else  # Wedge
         w = pd.wedge
-        f_val, b, c = _inverse_dir_vec_3d(w.dir, p[1], p[2], p[3])
+        f_val, b, c = _inverse_wedge_vec_3d(w.dir, p[1], p[2], p[3])
         if !(isfinite(b) && isfinite(c) && isfinite(f_val) && f_val > -tol)
             return NaN_ξ
         end
@@ -365,6 +394,74 @@ function lagrange_basis(xs, ξ::T) where {T}
         v
     end
     return out
+end
+
+# 1D Lagrange basis derivative values at `ξ` for nodes `xs` (product
+# rule over the basis factors). O(N²) per call, mirrors lagrange_basis.
+function lagrange_basis_deriv(xs, ξ::T) where {T}
+    N = length(xs)
+    out = ntuple(N) do i
+        s = zero(T)
+        @inbounds for j in 1:N
+            j == i && continue
+            p = one(T) / (xs[i] - xs[j])
+            for m in 1:N
+                (m == i || m == j) && continue
+                p *= (ξ - xs[m]) / (xs[i] - xs[m])
+            end
+            s += p
+        end
+        s
+    end
+    return out
+end
+
+"""
+    tensor_interp_grad(ue, ξ, η, ζ, xs) → (val, ∇ref)
+
+Tensor-product Lagrange interpolation of an `(N, N, N)` per-element
+field block at the reference point `(ξ, η, ζ)`, returning both the value
+and the reference-coordinate gradient `∇ref :: SVector{3}` (chain-rule
+with the element Jacobian — e.g. from [`element_point_and_jac`](@ref) —
+turns it into the physical gradient: `∇x f = J⁻ᵀ ∇ref f`).
+"""
+function tensor_interp_grad(ue::AbstractArray{T, 3},
+                            ξ::T, η::T, ζ::T, xs) where {T}
+    N = length(xs)
+    ℓξ = lagrange_basis(xs, ξ);  dξ = lagrange_basis_deriv(xs, ξ)
+    ℓη = lagrange_basis(xs, η);  dη = lagrange_basis_deriv(xs, η)
+    ℓζ = lagrange_basis(xs, ζ);  dζ = lagrange_basis_deriv(xs, ζ)
+    s = zero(T); g1 = zero(T); g2 = zero(T); g3 = zero(T)
+    @inbounds for k in 1:N, j in 1:N, i in 1:N
+        u = ue[i, j, k]
+        s  += u * ℓξ[i] * ℓη[j] * ℓζ[k]
+        g1 += u * dξ[i] * ℓη[j] * ℓζ[k]
+        g2 += u * ℓξ[i] * dη[j] * ℓζ[k]
+        g3 += u * ℓξ[i] * ℓη[j] * dζ[k]
+    end
+    return s, SVector{3, T}(g1, g2, g3)
+end
+
+"""
+    element_point_and_jac(mesh::Mesh{3, T}, e, ξ::SVector{3, T}) → (P, J)
+
+Physical position `P` and element Jacobian `J[i, a] = ∂x_i/∂ξ_a` of the
+reference point `ξ ∈ [0, 1]³` of element `e` — analytic for the
+curvilinear patch kinds (Inflation/Shell/Wedge/WarpedCubic), trilinear
+for Cubic patches. The inverse transpose of `J` maps reference gradients
+from [`tensor_interp_grad`](@ref) to physical gradients.
+"""
+function element_point_and_jac(mesh::Mesh{3, T}, e::Integer,
+                               ξ::SVector{3, T}) where {T}
+    pd = mesh.patch_desc[mesh.patch_id[e]]
+    if pd.kind === Cubic
+        verts = element_vertices(mesh, e)
+        return trilinear_map(verts, ξ[1], ξ[2], ξ[3]),
+               trilinear_jacobian(verts, ξ[1], ξ[2], ξ[3])
+    end
+    idx = (Int(mesh.patch_idx[1, e]), Int(mesh.patch_idx[2, e]),
+           Int(mesh.patch_idx[3, e]))
+    return _patch_point_and_jac(pd, idx, ξ[1], ξ[2], ξ[3])
 end
 
 """

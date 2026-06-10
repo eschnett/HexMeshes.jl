@@ -280,6 +280,24 @@ count_zero_neighbours(m::Mesh{3}) = count(==(0), m.conn.neighbour)
         end
     end
 
+    @testset "make_cubed_cube_mesh: patch_to_global ↔ global_to_patch round-trip" begin
+        # Covers all six Wedge directions; the dirs 2/3/6 inverse used
+        # to swap the tangential coordinates (b ↔ c).
+        T = Float64
+        m = make_cubed_cube_mesh(T, 3, 0.4)
+        for patch_index in 1:7
+            for _ in 1:20
+                ξ = SVector{3, T}(rand(), rand(), rand())
+                p = patch_to_global(m.patch_desc[patch_index], ξ)
+                ξ2 = global_to_patch(m.patch_desc[patch_index], p)
+                @test !isnan(ξ2[1])
+                @test ξ2[1] ≈ ξ[1] atol=1e-12
+                @test ξ2[2] ≈ ξ[2] atol=1e-12
+                @test ξ2[3] ≈ ξ[3] atol=1e-12
+            end
+        end
+    end
+
     @testset "make_inflated_cube_mesh: locate_patch and wrong-patch NaN" begin
         T = Float64
         m = make_inflated_cube_mesh(T, 0.1, 0.3, 1.0, 3)

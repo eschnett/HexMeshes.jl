@@ -275,6 +275,22 @@ using Test
         @test locate_point(m, SVector{2, Float64}(2.0, 0.0))[1] == 0
     end
 
+    @testset "make_cubed_square_mesh: patch_to_global ↔ global_to_patch round-trip" begin
+        # Covers all four Wedge directions; the dirs 2/3 inverse used
+        # to flip the sign of the tangential coordinate b.
+        m = make_cubed_square_mesh(Float64, 4, 0.3)
+        for patch_index in 1:5
+            for _ in 1:25
+                ξ = SVector{2, Float64}(rand(), rand())
+                p = patch_to_global(m.patch_desc[patch_index], ξ)
+                ξ2 = global_to_patch(m.patch_desc[patch_index], p)
+                @test !isnan(ξ2[1])
+                @test ξ2[1] ≈ ξ[1] atol=1e-12
+                @test ξ2[2] ≈ ξ[2] atol=1e-12
+            end
+        end
+    end
+
     # ── Inflated square ──────────────────────────────────────────────
 
     @testset "make_inflated_square_mesh: types and shape" begin

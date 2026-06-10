@@ -123,6 +123,7 @@ export
     linear_shape, linear_dshape, linear_map, linear_jacobian,
     # 2D analogs
     bilinear_shape, bilinear_dshape, bilinear_map, bilinear_jacobian,
-    lagrange_basis, tensor_interp
+    lagrange_basis, lagrange_basis_deriv, tensor_interp,
+    tensor_interp_grad, element_point_and_jac
 
 end # module HexMeshes

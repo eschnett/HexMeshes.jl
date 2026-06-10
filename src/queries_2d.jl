@@ -132,6 +132,26 @@ end
     end
 end
 
+# Per-direction inverse of the *Wedge* forward layout (`_vert_wedge` /
+# `_ppj_wedge_2d` / `patch_to_global`'s Wedge branch). Unlike
+# `_patch_direction_vec_2d`, the Wedge map has no sign flip of `b` on
+# the −x and +y directions, so it needs its own inverse:
+#   dir 1 (+x): P = ( r,  b·r)  →  r =  x,  b =  y/x
+#   dir 2 (−x): P = (−r,  b·r)  →  r = −x,  b = −y/x
+#   dir 3 (+y): P = (b·r,  r )  →  r =  y,  b =  x/y
+#   dir 4 (−y): P = (b·r, −r )  →  r = −y,  b = −x/y
+@inline function _inverse_wedge_vec_2d(dir::Integer, x::T, y::T) where {T}
+    if dir == 1                     # +x
+        return  x,  y / x
+    elseif dir == 2                 # -x
+        return -x, -y / x
+    elseif dir == 3                 # +y
+        return  y,  x / y
+    else                            # -y
+        return -y, -x / y
+    end
+end
+
 """
     patch_to_global(pd::PatchDesc{2, T}, ξ::SVector{2, T}) → SVector{2, T}
 
@@ -232,7 +252,7 @@ function global_to_patch(pd::PatchDesc{2, T}, p::SVector{2, T};
         return NaN_ξ
     else  # Wedge
         w = pd.wedge
-        f_val, b = _inverse_dir_vec_2d(w.dir, p[1], p[2])
+        f_val, b = _inverse_wedge_vec_2d(w.dir, p[1], p[2])
         if !(isfinite(b) && isfinite(f_val) && f_val > -tol)
             return NaN_ξ
         end
