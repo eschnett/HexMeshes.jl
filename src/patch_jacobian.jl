@@ -137,9 +137,66 @@ end
     return P, J
 end
 
+# Warp value + patch-coordinate Jacobian `∂x/∂q` of a 3D WarpedCubic
+# patch at the *patch* coordinate `q` (not element-reference coords).
+# Differentiated by hand so we don't drag ForwardDiff in here. Shared
+# by `_ppj_warped_cubic_3d` (which composes it with the constant affine
+# element sub-range) and by the Newton inversion in `global_to_patch`'s
+# WarpedCubic branch (queries.jl).
+@inline function _warp_point_and_jac(wc::PatchWarpedCubic{3, T},
+                                       q::SVector{3, T}) where {T}
+    # Warp: x = q + A · sin(2π (q − x_lo) / L) · [cos(…) for coupled].
+    L1 = wc.x_hi[1] - wc.x_lo[1]
+    L2 = wc.x_hi[2] - wc.x_lo[2]
+    L3 = wc.x_hi[3] - wc.x_lo[3]
+    ϕ1 = 2 * pi * (q[1] - wc.x_lo[1]) / L1
+    ϕ2 = 2 * pi * (q[2] - wc.x_lo[2]) / L2
+    ϕ3 = 2 * pi * (q[3] - wc.x_lo[3]) / L3
+    A  = wc.amplitude
+
+    if wc.warp_kind === :diagonal
+        Px = q[1] + A * sin(ϕ1)
+        Py = q[2] + A * sin(ϕ2)
+        Pz = q[3] + A * sin(ϕ3)
+        # ∂x_a/∂q_a — only diagonal nonzero.
+        dPx_da = one(T) + A * cos(ϕ1) * (2 * pi / L1)
+        dPy_db = one(T) + A * cos(ϕ2) * (2 * pi / L2)
+        dPz_dc = one(T) + A * cos(ϕ3) * (2 * pi / L3)
+        J = SMatrix{3, 3, T}(
+            dPx_da,  zero(T), zero(T),     # column 1: ∂/∂q₁
+            zero(T), dPy_db,  zero(T),     # column 2: ∂/∂q₂
+            zero(T), zero(T), dPz_dc)      # column 3: ∂/∂q₃
+        return SVector{3, T}(Px, Py, Pz), J
+    else
+        # :coupled — x_a = q_a + A sin(ϕ_a) cos(ϕ_b), b = (a mod 3) + 1.
+        s1, s2, s3 = sin(ϕ1), sin(ϕ2), sin(ϕ3)
+        c1, c2, c3 = cos(ϕ1), cos(ϕ2), cos(ϕ3)
+        # x = q₁ + A s1 c2;  y = q₂ + A s2 c3;  z = q₃ + A s3 c1.
+        Px = q[1] + A * s1 * c2
+        Py = q[2] + A * s2 * c3
+        Pz = q[3] + A * s3 * c1
+        k1 = 2 * pi / L1; k2 = 2 * pi / L2; k3 = 2 * pi / L3
+        dPxda = one(T) + A * c1 * c2 * k1
+        dPxdb =          -A * s1 * s2 * k2
+        # dPxdc = 0
+        dPydb = one(T) + A * c2 * c3 * k2
+        dPydc =          -A * s2 * s3 * k3
+        # dPyda = 0
+        dPzdc = one(T) + A * c3 * c1 * k3
+        dPzda =          -A * s3 * s1 * k1
+        # dPzdb = 0
+        J = SMatrix{3, 3, T}(
+            dPxda,   zero(T), dPzda,       # column 1: ∂/∂q₁
+            dPxdb,   dPydb,   zero(T),     # column 2: ∂/∂q₂
+            zero(T), dPydc,   dPzdc)       # column 3: ∂/∂q₃
+        return SVector{3, T}(Px, Py, Pz), J
+    end
+end
+
 # WarpedCubic — composition of (a) affine element-reference → patch
-# parameter and (b) the warp. Differentiate the composition by hand
-# (the affine part is constant) so we don't drag ForwardDiff in here.
+# parameter and (b) the warp (`_warp_point_and_jac`). The affine part
+# has constant Jacobian (d1, d2, d3), so the chain rule is a per-column
+# scaling.
 @inline function _ppj_warped_cubic_3d(wc::PatchWarpedCubic{3, T},
                                         idx::NTuple{3, <:Integer},
                                         ξ::T, η::T, ζ::T) where {T}
@@ -151,60 +208,17 @@ end
     d2 = x_hi_e_2 - x_lo_e_2
     d3 = x_hi_e_3 - x_lo_e_3
     # Patch-space coord at this reference point.
-    a = x_lo_e_1 + d1 * ξ
-    b = x_lo_e_2 + d2 * η
-    c = x_lo_e_3 + d3 * ζ
-
-    # Warp: x = ξ_patch + A · sin(2π (ξ_patch − x_lo) / L) · [cos(…) for coupled].
-    L1 = wc.x_hi[1] - wc.x_lo[1]
-    L2 = wc.x_hi[2] - wc.x_lo[2]
-    L3 = wc.x_hi[3] - wc.x_lo[3]
-    ϕ1 = 2 * pi * (a - wc.x_lo[1]) / L1
-    ϕ2 = 2 * pi * (b - wc.x_lo[2]) / L2
-    ϕ3 = 2 * pi * (c - wc.x_lo[3]) / L3
-    A  = wc.amplitude
-
-    if wc.warp_kind === :diagonal
-        Px = a + A * sin(ϕ1)
-        Py = b + A * sin(ϕ2)
-        Pz = c + A * sin(ϕ3)
-        # ∂x_a/∂(patch a) — only diagonal nonzero.
-        dPx_da = one(T) + A * cos(ϕ1) * (2 * pi / L1)
-        dPy_db = one(T) + A * cos(ϕ2) * (2 * pi / L2)
-        dPz_dc = one(T) + A * cos(ϕ3) * (2 * pi / L3)
-        # Multiply by patch-coord-vs-reference-coord scaling (d1, d2, d3)
-        # to get ∂x/∂ξ_ref.
-        J = SMatrix{3, 3, T}(
-            dPx_da * d1, zero(T),     zero(T),       # column 1: ∂/∂ξ
-            zero(T),     dPy_db * d2, zero(T),       # column 2: ∂/∂η
-            zero(T),     zero(T),     dPz_dc * d3)   # column 3: ∂/∂ζ
-        return SVector{3, T}(Px, Py, Pz), J
-    else
-        # :coupled — x_a = ξ_a + A sin(ϕ_a) cos(ϕ_b), b = (a mod 3) + 1.
-        s1, s2, s3 = sin(ϕ1), sin(ϕ2), sin(ϕ3)
-        c1, c2, c3 = cos(ϕ1), cos(ϕ2), cos(ϕ3)
-        # x = a + A s1 c2;  y = b + A s2 c3;  z = c + A s3 c1.
-        Px = a + A * s1 * c2
-        Py = b + A * s2 * c3
-        Pz = c + A * s3 * c1
-        k1 = 2 * pi / L1; k2 = 2 * pi / L2; k3 = 2 * pi / L3
-        # Patch-coord Jacobian (with respect to a, b, c).
-        dPxda = one(T) + A * c1 * c2 * k1
-        dPxdb =          -A * s1 * s2 * k2
-        # dPxdc = 0
-        dPydb = one(T) + A * c2 * c3 * k2
-        dPydc =          -A * s2 * s3 * k3
-        # dPyda = 0
-        dPzdc = one(T) + A * c3 * c1 * k3
-        dPzda =          -A * s3 * s1 * k1
-        # dPzdb = 0
-        # Reference-coord Jacobian: column-major (∂x/∂ξ_ref, scaled).
-        J = SMatrix{3, 3, T}(
-            dPxda * d1, zero(T),    dPzda * d1,     # column 1: ∂/∂ξ
-            dPxdb * d2, dPydb * d2, zero(T),        # column 2: ∂/∂η
-            zero(T),    dPydc * d3, dPzdc * d3)     # column 3: ∂/∂ζ
-        return SVector{3, T}(Px, Py, Pz), J
-    end
+    q = SVector{3, T}(x_lo_e_1 + d1 * ξ,
+                      x_lo_e_2 + d2 * η,
+                      x_lo_e_3 + d3 * ζ)
+    P, Jq = _warp_point_and_jac(wc, q)
+    # Multiply each patch-coord Jacobian column by the element width
+    # (d1, d2, d3) to get ∂x/∂ξ_ref.
+    J = SMatrix{3, 3, T}(
+        Jq[1, 1] * d1, Jq[2, 1] * d1, Jq[3, 1] * d1,   # column 1: ∂/∂ξ
+        Jq[1, 2] * d2, Jq[2, 2] * d2, Jq[3, 2] * d2,   # column 2: ∂/∂η
+        Jq[1, 3] * d3, Jq[2, 3] * d3, Jq[3, 3] * d3)   # column 3: ∂/∂ζ
+    return P, J
 end
 
 @inline function _ppj_inflation_3d(pi::PatchInflation{3, T},

@@ -17,9 +17,9 @@ Override with the `tol` keyword on any individual call.
 
 For `Rational` precisions, arithmetic on axis-aligned (`Cubic`) patches
 is exact and no slack is needed — `default_tol(Rational{...}) = 0`.
-Curvilinear (`Wedge`/`Inflation`/`Shell`) patches use `sqrt` and `^`,
-which type-promote out of `Rational`; only `Cubic` patches are
-expected to work with rational precision.
+Curvilinear (`Wedge`/`Inflation`/`Shell`/`WarpedCubic`) patches use
+`sqrt`, `^`, and trigonometry, which type-promote out of `Rational`;
+only `Cubic` patches are expected to work with rational precision.
 """
 @inline default_tol(::Type{T}) where {T<:Real} = sqrt(eps(T))
 @inline default_tol(::Type{R}) where {R<:Rational} = zero(R)
@@ -221,7 +221,7 @@ function patch_to_global(pd::PatchDesc{3, T}, ξ::SVector{3, T}) where {T}
         f = r / Q
         vx, vy, vz = _patch_direction_vec(ps.dir, b, c)
         return SVector{3, T}(f * vx, f * vy, f * vz)
-    else  # Wedge
+    elseif k === Wedge
         w = pd.wedge
         a = w.a_lo + (w.a_hi - w.a_lo) * ξ[1]
         b = w.b_lo + (w.b_hi - w.b_lo) * ξ[2]
@@ -235,6 +235,16 @@ function patch_to_global(pd::PatchDesc{3, T}, ξ::SVector{3, T}) where {T}
         elseif dir == Int8(5);  return SVector{3, T}(b * r, c * r,  r)
         else                    return SVector{3, T}(b * r, c * r, -r)
         end
+    elseif k === WarpedCubic
+        wc = pd.warped_cubic
+        q = SVector{3, T}(
+            wc.x_lo[1] + (wc.x_hi[1] - wc.x_lo[1]) * ξ[1],
+            wc.x_lo[2] + (wc.x_hi[2] - wc.x_lo[2]) * ξ[2],
+            wc.x_lo[3] + (wc.x_hi[3] - wc.x_lo[3]) * ξ[3])
+        P, _ = _warp_point_and_jac(wc, q)
+        return P
+    else
+        error("patch_to_global: unsupported patch kind $k")
     end
 end
 
@@ -249,9 +259,11 @@ Base.@deprecate patch_to_global(mesh::Mesh{3, T}, patch_index::Integer,
         → SVector{3, T}
 
 Inverse of [`patch_to_global`](@ref). Returns `_outside_xi(Val(3), T)`
-if `p` lies outside this patch by more than `tol`. Closed-form for
-all four patch kinds (no Newton iteration). Round-trip exact to
-machine precision for points strictly inside the patch.
+if `p` lies outside this patch by more than `tol`. Closed-form for the
+Cubic / Inflation / Shell / Wedge kinds; WarpedCubic has no closed-form
+inverse and uses a Newton iteration on the forward warp (driven to the
+roundoff floor, so still round-trip exact to ≈ machine precision for
+points strictly inside the patch).
 """
 function global_to_patch(pd::PatchDesc{3, T}, p::SVector{3, T};
                           tol = default_tol(T)) where {T}
@@ -305,7 +317,7 @@ function global_to_patch(pd::PatchDesc{3, T}, p::SVector{3, T};
                                   clamp(ξ_c, zero(T), one(T)))
         end
         return NaN_ξ
-    else  # Wedge
+    elseif k === Wedge
         w = pd.wedge
         f_val, b, c = _inverse_wedge_vec_3d(w.dir, p[1], p[2], p[3])
         if !(isfinite(b) && isfinite(c) && isfinite(f_val) && f_val > -tol)
@@ -324,6 +336,40 @@ function global_to_patch(pd::PatchDesc{3, T}, p::SVector{3, T};
                                   clamp(ξ_c, zero(T), one(T)))
         end
         return NaN_ξ
+    elseif k === WarpedCubic
+        wc = pd.warped_cubic
+        # No closed form: the warp `x = q + A·(sinusoidal in q)` is a
+        # smooth perturbation of the identity (globally invertible for
+        # |A| < min(L_a)/(2π)), so Newton on the forward map converges
+        # quadratically from the unwarped Cubic seed `q = p`. Iterate to
+        # the roundoff floor (≈ machine precision, matching the
+        # closed-form branches); the cap only guards non-invertible
+        # (|A| too large) descriptors, for which the residual check
+        # below rejects the point.
+        q = p
+        res = T(Inf)
+        res_floor = 8 * eps(T) * max(one(T), abs(p[1]), abs(p[2]), abs(p[3]))
+        for _ in 1:40
+            x, J = _warp_point_and_jac(wc, q)
+            r = x - p
+            res = sqrt(r[1]^2 + r[2]^2 + r[3]^2)
+            res ≤ res_floor && break
+            q = q - (J \ r)
+        end
+        res ≤ tol || return NaN_ξ
+        ξ_a = (q[1] - wc.x_lo[1]) / (wc.x_hi[1] - wc.x_lo[1])
+        ξ_b = (q[2] - wc.x_lo[2]) / (wc.x_hi[2] - wc.x_lo[2])
+        ξ_c = (q[3] - wc.x_lo[3]) / (wc.x_hi[3] - wc.x_lo[3])
+        if -tol ≤ ξ_a ≤ one(T) + tol &&
+           -tol ≤ ξ_b ≤ one(T) + tol &&
+           -tol ≤ ξ_c ≤ one(T) + tol
+            return SVector{3, T}(clamp(ξ_a, zero(T), one(T)),
+                                  clamp(ξ_b, zero(T), one(T)),
+                                  clamp(ξ_c, zero(T), one(T)))
+        end
+        return NaN_ξ
+    else
+        error("global_to_patch: unsupported patch kind $k")
     end
 end
 

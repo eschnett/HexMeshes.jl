@@ -45,7 +45,14 @@ using Test
             (("uniform", make_uniform_hex(T, 2, 2, 2, T(0), T(1))),
              ("radial shell", make_radial_shell_mesh(T, T(1), T(2), 2;
                                                      M_r = 2)),
-             ("cubed cube", make_cubed_cube_mesh(T, 2, T(0.4))))
+             ("cubed cube", make_cubed_cube_mesh(T, 2, T(0.4))),
+             ("warped diagonal", make_warped_uniform_hex(T, 2, T(0), T(1),
+                                                         T(0.05);
+                                                         periodic = true)),
+             ("warped coupled", make_warped_uniform_hex(T, 2, T(0), T(1),
+                                                        T(0.05);
+                                                        periodic = true,
+                                                        warp_kind = :coupled)))
         for e in (1, mesh.Ne)
             ξ0 = SVector(0.3, 0.6, 0.45)
             P, J = element_point_and_jac(mesh, e, ξ0)

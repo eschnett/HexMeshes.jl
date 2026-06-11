@@ -1,4 +1,5 @@
 using HexMeshes
+using StaticArrays
 using Test
 
 # Periodic-boundary tests for the uniform mesh builders.
@@ -217,5 +218,85 @@ end
         # differing by exactly L in the warped axis (the warp
         # vanishes at corners).
         @test maximum(abs, m.vertex_coords) > 0.01
+    end
+
+    @testset "make_warped_uniform_hex: locate_point + patch round-trip ($wk, A = $A)" for
+            wk in (:diagonal, :coupled), A in (0.02, 0.05, 0.1)
+        T = Float64
+        m = make_warped_uniform_hex(T, 2, 3, 2, 0.0, 1.0, A;
+                                      periodic = true, warp_kind = wk)
+        pd = m.patch_desc[1]
+        # ξ → global → ξ (Newton inverse of the warp, exact to roundoff).
+        for ξt in ((0.5, 0.5, 0.5), (0.13, 0.42, 0.77), (0.91, 0.08, 0.66),
+                   (0.02, 0.98, 0.5), (0.33, 0.5, 0.01))
+            ξ = SVector{3, T}(ξt)
+            p = patch_to_global(pd, ξ)
+            ξ2 = global_to_patch(pd, p)
+            @test !isnan(ξ2[1])
+            @test ξ2[1] ≈ ξ[1] atol = 1e-12
+            @test ξ2[2] ≈ ξ[2] atol = 1e-12
+            @test ξ2[3] ≈ ξ[3] atol = 1e-12
+        end
+        # global → ξ → global on interior points.
+        for pt in ((0.5, 0.5, 0.5), (0.2, 0.7, 0.4), (0.85, 0.15, 0.6))
+            p = SVector{3, T}(pt)
+            ξ = global_to_patch(pd, p)
+            @test !isnan(ξ[1])
+            p2 = patch_to_global(pd, ξ)
+            @test p2[1] ≈ p[1] atol = 1e-12
+            @test p2[2] ≈ p[2] atol = 1e-12
+            @test p2[3] ≈ p[3] atol = 1e-12
+        end
+        # locate_point lands in a real element whose forward map
+        # reproduces the query point (this returned (0, zero ξ) for
+        # every point before the WarpedCubic inverse existed).
+        for pt in ((0.5, 0.5, 0.5), (0.31, 0.77, 0.12), (0.93, 0.21, 0.55))
+            p = SVector{3, T}(pt)
+            e, ξe = locate_point(m, p)
+            @test e > 0
+            P, _ = element_point_and_jac(m, e, ξe)
+            @test maximum(abs, P - p) < 1e-12
+        end
+        # Points outside the domain are still rejected. (The warp maps
+        # the box onto itself — sin(ϕ) vanishes on every face — so the
+        # warped domain is the same box.)
+        @test locate_point(m, SVector{3, T}(1.5, 0.5, 0.5))[1] == 0
+        @test locate_point(m, SVector{3, T}(0.5, -0.5, 0.5))[1] == 0
+    end
+
+    @testset "make_warped_uniform_hex: interpolate_field exact for patch-linear field ($wk)" for
+            wk in (:diagonal, :coupled)
+        T = Float64
+        A = 0.05
+        Mx, My, Mz = 2, 3, 2
+        m = make_warped_uniform_hex(T, Mx, My, Mz, 0.0, 1.0, A;
+                                      periodic = true, warp_kind = wk)
+        pd = m.patch_desc[1]
+        # GLL-ish interpolation nodes on [0, 1] (same as test_interp_grad).
+        xs = [0.0, 0.2763932022500211, 0.7236067977499789, 1.0]
+        N = length(xs)
+        # Degree-1 polynomial in the *patch parameter* ξ_patch — the
+        # space the interpolation nodes are laid out in, hence exactly
+        # representable on the warped elements. (A polynomial in the
+        # physical coordinates is not: the warp is sinusoidal, so x(ξ)
+        # is not polynomial.)
+        g(ξp) = 1 + 2 * ξp[1] - 3 * ξp[2] + ξp[3] / 2
+        u = Array{T}(undef, N, N, N, m.Ne)
+        for e in 1:m.Ne, k in 1:N, j in 1:N, i in 1:N
+            ξp = ((m.patch_idx[1, e] - 1 + xs[i]) / Mx,
+                  (m.patch_idx[2, e] - 1 + xs[j]) / My,
+                  (m.patch_idx[3, e] - 1 + xs[k]) / Mz)
+            u[i, j, k, e] = g(ξp)
+        end
+        # Query at off-node physical points constructed via the forward
+        # map, so the expected value is known analytically.
+        for ξt in ((0.5, 0.5, 0.5), (0.31, 0.77, 0.12), (0.93, 0.21, 0.55),
+                   (0.011, 0.5, 0.99))
+            ξ = SVector{3, T}(ξt)
+            p = patch_to_global(pd, ξ)
+            @test interpolate_field(m, xs, u, p) ≈ g(ξ) atol = 1e-12
+        end
+        # Outside the mesh → `default` (NaN).
+        @test isnan(interpolate_field(m, xs, u, SVector{3, T}(1.5, 0.5, 0.5)))
     end
 end

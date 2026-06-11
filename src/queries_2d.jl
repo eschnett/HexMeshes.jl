@@ -181,7 +181,7 @@ function patch_to_global(pd::PatchDesc{2, T}, ξ::SVector{2, T}) where {T}
         f = r / Q
         vx, vy = _patch_direction_vec_2d(ps.dir, b)
         return SVector{2, T}(f * vx, f * vy)
-    else  # Wedge
+    elseif k === Wedge
         w = pd.wedge
         a = w.a_lo + (w.a_hi - w.a_lo) * ξ[1]
         b = w.b_lo + (w.b_hi - w.b_lo) * ξ[2]
@@ -192,6 +192,10 @@ function patch_to_global(pd::PatchDesc{2, T}, ξ::SVector{2, T}) where {T}
         elseif dir == Int8(3);  return SVector{2, T}(b * r,  r)
         else                    return SVector{2, T}(b * r, -r)
         end
+    else
+        # No 2D builder emits WarpedCubic (or any future kind) yet;
+        # fail loudly rather than silently mis-reading another variant.
+        error("patch_to_global: unsupported 2D patch kind $k")
     end
 end
 
@@ -250,7 +254,7 @@ function global_to_patch(pd::PatchDesc{2, T}, p::SVector{2, T};
                                   clamp(ξ_b, zero(T), one(T)))
         end
         return NaN_ξ
-    else  # Wedge
+    elseif k === Wedge
         w = pd.wedge
         f_val, b = _inverse_wedge_vec_2d(w.dir, p[1], p[2])
         if !(isfinite(b) && isfinite(f_val) && f_val > -tol)
@@ -264,6 +268,10 @@ function global_to_patch(pd::PatchDesc{2, T}, p::SVector{2, T};
                                   clamp(ξ_b, zero(T), one(T)))
         end
         return NaN_ξ
+    else
+        # No 2D builder emits WarpedCubic (or any future kind) yet;
+        # fail loudly rather than silently mis-reading another variant.
+        error("global_to_patch: unsupported 2D patch kind $k")
     end
 end
 
