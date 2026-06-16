@@ -20,6 +20,25 @@ Four corner vertices of element `e` in Gmsh-canonical order.
 end
 
 """
+    element_point_and_jac(mesh::Mesh{2, T}, e, ξ::SVector{2, T}) → (P, J)
+
+Physical position `P` and element Jacobian `J[i, a] = ∂x_i/∂ξ_a` of the
+reference point `ξ ∈ [0, 1]²` of element `e` — analytic for the curvilinear
+patch kinds (Inflation/Shell/Wedge/WarpedCubic), bilinear for Cubic patches.
+The 2D analog of the `Mesh{3}` method; the inverse transpose of `J` maps
+reference gradients to physical gradients.
+"""
+function element_point_and_jac(mesh::Mesh{2, T}, e::Integer, ξ::SVector{2, T}) where {T}
+    pd = mesh.patch_desc[mesh.patch_id[e]]
+    if pd.kind === Cubic
+        verts = element_vertices(mesh, e)
+        return bilinear_map(verts, ξ[1], ξ[2]), bilinear_jacobian(verts, ξ[1], ξ[2])
+    end
+    idx = (Int(mesh.patch_idx[1, e]), Int(mesh.patch_idx[2, e]))
+    return _patch_point_and_jac_2d(pd, idx, ξ[1], ξ[2])
+end
+
+"""
     invert_element_map(verts::NTuple{4, SVector{2, T}}, p; tol, maxiter) → (ξ, ok)
 
 Newton inverse of the bilinear corner map.

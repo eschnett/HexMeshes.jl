@@ -245,7 +245,7 @@ end
     b = s.b_lo + (s.b_hi - s.b_lo) * (T(idx[2]) / T(s.dims[2]))
     Q = sqrt(one(T) + b * b)
     vx, vy = _patch_direction_vec_2d(s.dir, b)
-    r = (one(T) - a) * s.R1 + a * s.R2
+    r, _ = _shell_radius(s.R1, s.R2, a)
     f = r / Q
     return (f * vx, f * vy)
 end
@@ -257,7 +257,7 @@ end
     c = s.c_lo + (s.c_hi - s.c_lo) * (T(idx[3]) / T(s.dims[3]))
     Q = sqrt(one(T) + b * b + c * c)
     vx, vy, vz = _patch_direction_vec(s.dir, b, c)
-    r = (one(T) - a) * s.R1 + a * s.R2
+    r, _ = _shell_radius(s.R1, s.R2, a)
     f = r / Q
     return (f * vx, f * vy, f * vz)
 end

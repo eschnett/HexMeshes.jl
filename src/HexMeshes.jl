@@ -110,7 +110,7 @@ export
     make_line_mesh, make_quad_mesh, make_cubical_mesh,
     make_cubed_square_mesh, make_inflated_square_mesh, make_annulus_mesh,
     make_cubed_cube_mesh, make_inflated_cube_mesh,
-    make_radial_shell_mesh,
+    make_radial_shell_mesh, make_compactified_shell_mesh,
     # Host-side queries
     element_vertices, locate_point, invert_element_map, interpolate_field,
     default_tol,

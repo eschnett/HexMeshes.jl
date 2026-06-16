@@ -129,3 +129,58 @@ function _radial_shell_skeleton(::Type{T}, R1::Real, R2::Real, M::Int;
 
     return SkeletonMesh{3, T}(patches, faces)
 end
+
+"""
+    make_compactified_shell_mesh(::Type{T}, R1, M; M_r, inner_bc = :dirichlet) → Mesh{3, T}
+
+6-patch cubed-sphere shell covering `R1 ≤ |x| < ∞`: the outer face is at spatial
+infinity i⁰, reached by the compactifying radial map `r(a) = R1/(1−a)` (a
+`PatchShell` with `R2 = Inf`). `M_r` radial elements are uniform in the
+compactification parameter `a ∈ [0, 1]`, so the physical radial spacing grows
+without bound toward i⁰. The outer (i⁰) face is tagged Dirichlet `1` — impose
+the asymptotic value `u_∞` there; the inner face uses `inner_bc` (default
+`:dirichlet` → tag `2`).
+
+The element map is singular exactly at the i⁰ face (`a = 1`); spectral-element
+operators that integrate on interior (Gauss) nodes never sample it, and the i⁰
+DOFs carry the Dirichlet value directly.
+"""
+function make_compactified_shell_mesh(::Type{T}, R1::Real, M::Int;
+                                      M_r::Int, inner_bc::Symbol = :dirichlet) where {T}
+    skel = _compactified_shell_skeleton(T, R1, M; M_r, inner_bc)
+    return _skeleton_to_mesh(skel)
+end
+
+function _compactified_shell_skeleton(::Type{T}, R1::Real, M::Int;
+                                      M_r::Int, inner_bc::Symbol) where {T}
+    @assert M ≥ 1
+    @assert M_r ≥ 1
+    @assert R1 > 0
+
+    inner_tag = _shell_bc_tag(inner_bc; outer = false)
+    outer_tag = Int8(1)               # i⁰ Dirichlet
+    R1v = T(R1)
+    R2v = T(Inf)                       # sentinel selecting the compactified map
+    z = zero(T)
+    o = one(T)
+
+    patches = PatchDesc{3, T}[
+        PatchDesc(PatchShell{3, T}((M_r, M, M), Int8(dir),
+                                     z, o, -o, o, -o, o,
+                                     R1v, R2v))
+        for dir in 1:6
+    ]
+
+    faces = Matrix{FaceLink}(undef, 6, length(patches))
+    for d in 1:6
+        sp = d
+        faces[1, sp] = boundary_link(inner_tag)
+        faces[2, sp] = boundary_link(outer_tag)
+        for f in 3:6
+            neigh_dir, neigh_face = _INFLATION_NEIGHBOUR[d][f - 2]
+            faces[f, sp] = interior_link(neigh_dir, neigh_face, 0)
+        end
+    end
+
+    return SkeletonMesh{3, T}(patches, faces)
+end

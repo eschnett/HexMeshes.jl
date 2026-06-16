@@ -22,6 +22,18 @@ end, vertex 2 = right end).
 end
 
 """
+    element_point_and_jac(mesh::Mesh{1, T}, e, ξ::SVector{1, T}) → (P, J)
+
+Physical position `P` and element Jacobian `J[1, 1] = ∂x/∂ξ` of the reference
+point `ξ ∈ [0, 1]` of element `e`. The 1D analog of the `Mesh{3}` method. Current
+1D meshes are `Cubic` (affine), so this is the linear corner map.
+"""
+function element_point_and_jac(mesh::Mesh{1, T}, e::Integer, ξ::SVector{1, T}) where {T}
+    verts = element_vertices(mesh, e)
+    return linear_map(verts, ξ[1]), linear_jacobian(verts, ξ[1])
+end
+
+"""
     invert_element_map(verts::NTuple{2, SVector{1, T}}, p) → (ξ::SVector{1, T}, ok::Bool)
 
 Solve `linear_map(verts, ξ) = p` for the reference coordinate `ξ`. In

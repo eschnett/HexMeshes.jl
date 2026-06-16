@@ -10,8 +10,9 @@ using HexMeshes
 using HexMeshes: Mesh, PatchDesc, PatchKind, Cubic, Wedge, Inflation, Shell,
                  make_uniform_hex, make_cubed_cube_mesh, make_inflated_cube_mesh, nv,
                  npatches, locate_patch, global_to_patch, patch_to_global,
-                 locate_element_in_patch, locate_point
+                 locate_element_in_patch, locate_point, element_point_and_jac
 using StaticArrays
+using LinearAlgebra: det, norm
 using Test
 
 count_zero_neighbours(m::Mesh{3}) = count(==(0), m.conn.neighbour)
@@ -472,6 +473,37 @@ count_zero_neighbours(m::Mesh{3}) = count(==(0), m.conn.neighbour)
         # BC kwarg → tag mapping (outer :dirichlet → 1).
         md = make_annulus_mesh(T, R1, R2, 2; outer_bc = :dirichlet)
         @test sort(unique(md.conn.bdry)) == Int8[0, 1, 8]
+    end
+
+    @testset "make_compactified_shell_mesh: map well-formed + topology = plain shell" begin
+        T = Float64
+        mc = make_compactified_shell_mesh(T, 1.0, 2; M_r = 3, inner_bc = :dirichlet)
+        ms = make_radial_shell_mesh(T, 1.0, 2.0, 2; M_r = 3, inner_bc = :dirichlet, outer_bc = :dirichlet)
+        # Identical topology to the plain shell — only the geometry differs.
+        @test mc.Ne == ms.Ne
+        @test nv(mc) == nv(ms)
+        @test mc.conn.neighbour == ms.conn.neighbour
+        @test mc.conn.orientation == ms.conn.orientation
+        @test sort(unique(mc.conn.bdry)) == Int8[0, 1, 2]   # interior, i⁰ (1), inner (2)
+        # i⁰ vertices sit at spatial infinity.
+        @test any(isinf, mc.vertex_coords)
+        # Interior point: finite, positive-det Jacobian matching central FD.
+        e = 1
+        ξ = SVector(0.4, 0.3, 0.6)
+        h = 1.0e-6
+        P, J = element_point_and_jac(mc, e, ξ)
+        @test all(isfinite, P) && all(isfinite, J)
+        @test det(J) > 0
+        for a in 1:3
+            ea = SVector(ntuple(d -> d == a ? h : 0.0, 3))
+            Pp, _ = element_point_and_jac(mc, e, ξ + ea)
+            Pm, _ = element_point_and_jac(mc, e, ξ - ea)
+            @test maximum(abs.((Pp .- Pm) ./ (2h) .- J[:, a])) < 1.0e-5
+        end
+        # Radius grows without bound toward i⁰ (outermost radial element, ξ_a → 1).
+        eo = findfirst(e -> mc.patch_idx[1, e] == 3, 1:mc.Ne)
+        Po, _ = element_point_and_jac(mc, eo, SVector(0.99, 0.0, 0.0))
+        @test norm(Po) > 50.0
     end
 
 end

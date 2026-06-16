@@ -257,6 +257,20 @@ end
     return P, J
 end
 
+# Radial map of a shell patch and its `a`-derivative. A finite `R2` gives the
+# usual linear `r(a) = (1−a)·R1 + a·R2`; `R2 = Inf` selects the COMPACTIFIED map
+# `r(a) = R1/(1−a)`, which sends the outer face `a = 1` to spatial infinity (i⁰).
+# `dr/da` blows up at `a = 1`, but operators only ever sample interior (Gauss)
+# points, never the singular face.
+@inline function _shell_radius(R1::T, R2::T, a::T) where {T}
+    if isinf(R2)
+        om = one(T) - a
+        return R1 / om, R1 / (om * om)
+    else
+        return (one(T) - a) * R1 + a * R2, R2 - R1
+    end
+end
+
 @inline function _ppj_shell_3d(ps::PatchShell{3, T},
                                  idx::NTuple{3, <:Integer},
                                  ξ::T, η::T, ζ::T) where {T}
@@ -271,10 +285,9 @@ end
 
     Q  = sqrt(one(T) + (b * b + c * c))
     Q3 = Q * Q * Q
-    R1 = ps.R1;  R2 = ps.R2
-    rval  = (one(T) - a) * R1 + a * R2
+    rval, dr_da = _shell_radius(ps.R1, ps.R2, a)
     f     = rval / Q
-    df_da = (R2 - R1) / Q
+    df_da = dr_da / Q
     df_db = -rval * b / Q3
     df_dc = -rval * c / Q3
 
@@ -413,10 +426,9 @@ end
 
     Q  = sqrt(one(T) + b * b)
     Q3 = Q * Q * Q
-    R1 = ps.R1;  R2 = ps.R2
-    rval  = (one(T) - a) * R1 + a * R2
+    rval, dr_da = _shell_radius(ps.R1, ps.R2, a)
     f     = rval / Q
-    df_da = (R2 - R1) / Q
+    df_da = dr_da / Q
     df_db = -rval * b / Q3
 
     vx, vy, dvxb, dvyb = _patch_direction_vec_2d_and_derivs(ps.dir, b)

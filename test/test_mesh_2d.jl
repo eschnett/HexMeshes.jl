@@ -7,8 +7,8 @@ using HexMeshes
 using HexMeshes: Mesh, PatchKind, Cubic, Wedge, Inflation, Shell,
                  PatchDesc,
                  make_uniform_quad, make_cubed_square_mesh,
-                 make_inflated_square_mesh, nv, npatches,
-                 element_vertices, locate_point, invert_element_map,
+                 make_inflated_square_mesh, make_annulus_mesh, nv, npatches,
+                 element_vertices, element_point_and_jac, locate_point, invert_element_map,
                  interpolate_field,
                  bilinear_shape, bilinear_dshape,
                  bilinear_map, bilinear_jacobian,
@@ -431,6 +431,39 @@ using Test
         @test locate_patch(m, SVector(0.0, -0.2)) == 5           # -y inflation
         @test locate_patch(m, SVector(0.7, 0.0)) == 6            # +x shell
         @test locate_patch(m, SVector(2.0, 0.0)) == 0            # outside
+    end
+
+    @testset "element_point_and_jac (2D): corners + analytic Jacobian" begin
+        # Cubic (bilinear) path on the uniform quad.
+        m = make_uniform_quad(Float64, 3, 3, 0.0, 1.0)
+        for e in (1, 5, m.Ne)
+            vs = element_vertices(m, e)
+            for (c, s) in ((1, (0.0, 0.0)), (2, (1.0, 0.0)), (3, (1.0, 1.0)), (4, (0.0, 1.0)))
+                P, J = element_point_and_jac(m, e, SVector(s...))
+                @test P ≈ vs[c]
+                @test J ≈ bilinear_jacobian(vs, s[1], s[2])
+            end
+        end
+        # Curvilinear (Shell) path on the annulus: corners exact + analytic
+        # Jacobian matches central finite differences.
+        ma = make_annulus_mesh(Float64, 1.0, 2.0, 3)
+        h = 1.0e-6
+        for e in (1, 7, ma.Ne)
+            vs = element_vertices(ma, e)
+            for (c, s) in ((1, (0.0, 0.0)), (2, (1.0, 0.0)), (3, (1.0, 1.0)), (4, (0.0, 1.0)))
+                P, _ = element_point_and_jac(ma, e, SVector(s...))
+                @test maximum(abs.(P .- vs[c])) ≤ 1.0e-12
+            end
+            ξ = SVector(0.37, 0.61)
+            _, J = element_point_and_jac(ma, e, ξ)
+            @test det(J) > 0
+            for a in 1:2
+                eav = a == 1 ? SVector(h, 0.0) : SVector(0.0, h)
+                Pp, _ = element_point_and_jac(ma, e, ξ + eav)
+                Pm, _ = element_point_and_jac(ma, e, ξ - eav)
+                @test maximum(abs.((Pp .- Pm) ./ (2h) .- J[:, a])) < 1.0e-5
+            end
+        end
     end
 
 end

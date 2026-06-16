@@ -4,7 +4,7 @@
 
 using HexMeshes
 using HexMeshes: Mesh, make_uniform_line, nv, npatches,
-                 element_vertices, locate_point, invert_element_map,
+                 element_vertices, element_point_and_jac, locate_point, invert_element_map,
                  locate_patch, locate_element_in_patch,
                  patch_to_global, global_to_patch,
                  interpolate_field,
@@ -178,6 +178,18 @@ count_zero_neighbours_1d(m) = count(==(0), m.conn.neighbour)
         for x_q in (0.05, 0.3, 0.55, 0.8, 0.999)
             val = interpolate_field(m, xs, u, SVector{1, Float64}(x_q))
             @test val ≈ 2 * x_q + 1 atol=1e-12
+        end
+    end
+
+    @testset "element_point_and_jac (1D): endpoints + Jacobian" begin
+        m = make_uniform_line(Float64, 5, 0.0, 1.0)
+        for e in (1, 3, m.Ne)
+            vs = element_vertices(m, e)
+            P0, J0 = element_point_and_jac(m, e, SVector(0.0))
+            P1, _ = element_point_and_jac(m, e, SVector(1.0))
+            @test P0 ≈ vs[1]
+            @test P1 ≈ vs[2]
+            @test J0 ≈ linear_jacobian(vs, 0.0)
         end
     end
 
