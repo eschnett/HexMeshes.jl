@@ -30,7 +30,11 @@ reference gradients to physical gradients.
 """
 function element_point_and_jac(mesh::Mesh{2, T}, e::Integer, ξ::SVector{2, T}) where {T}
     pd = mesh.patch_desc[mesh.patch_id[e]]
-    if pd.kind === Cubic
+    # Cubic and BilinearQuad share the corner-bilinear path: bilinear
+    # interpolation of an element's four corner vertices exactly reproduces
+    # the patch map inside that element (a bilinear map restricted to any
+    # sub-rectangle is bilinear), so no analytic-Jacobian branch is needed.
+    if pd.kind === Cubic || pd.kind === BilinearQuad
         verts = element_vertices(mesh, e)
         return bilinear_map(verts, ξ[1], ξ[2]), bilinear_jacobian(verts, ξ[1], ξ[2])
     end
@@ -171,6 +175,48 @@ end
     end
 end
 
+# Position + Jacobian of a bilinear-quad patch map at (ξ, η). Columns of
+# `J` are ∂P/∂ξ and ∂P/∂η.
+@inline function _bilinear_quad_point_and_jac(q::PatchBilinearQuad{2, T},
+                                              ξ::T, η::T) where {T}
+    c00, c10, c11, c01 = q.corners
+    omξ = one(T) - ξ;  omη = one(T) - η
+    Px = omξ * omη * c00[1] + ξ * omη * c10[1] + ξ * η * c11[1] + omξ * η * c01[1]
+    Py = omξ * omη * c00[2] + ξ * omη * c10[2] + ξ * η * c11[2] + omξ * η * c01[2]
+    Jξx = omη * (c10[1] - c00[1]) + η * (c11[1] - c01[1])
+    Jξy = omη * (c10[2] - c00[2]) + η * (c11[2] - c01[2])
+    Jηx = omξ * (c01[1] - c00[1]) + ξ * (c11[1] - c10[1])
+    Jηy = omξ * (c01[2] - c00[2]) + ξ * (c11[2] - c10[2])
+    return SVector{2, T}(Px, Py), SMatrix{2, 2, T}(Jξx, Jξy, Jηx, Jηy)
+end
+
+# Newton inverse of the bilinear corner map (the map is bilinear, not
+# affine, so there is no closed form). Seeds from the patch centre; the
+# straight-sided quads of `make_two_hole_mesh` are convex, so Newton
+# converges in a handful of steps. Returns `_outside_xi(Val(2), T)` if
+# `p` is outside the patch by more than `tol`.
+function _invert_bilinear_quad(q::PatchBilinearQuad{2, T}, p::SVector{2, T};
+                               tol = default_tol(T)) where {T}
+    ξ = SVector{2, T}(one(T) / 2, one(T) / 2)
+    res = T(Inf)
+    res_floor = 8 * eps(T) * max(one(T), abs(p[1]), abs(p[2]))
+    for _ in 1:40
+        x, J = _bilinear_quad_point_and_jac(q, ξ[1], ξ[2])
+        r = x - p
+        res = sqrt(r[1]^2 + r[2]^2)
+        res ≤ res_floor && break
+        d = J[1, 1] * J[2, 2] - J[1, 2] * J[2, 1]
+        (isfinite(d) && abs(d) > eps(T)) || return _outside_xi(Val(2), T)
+        ξ = ξ - (J \ r)
+    end
+    res ≤ tol || return _outside_xi(Val(2), T)
+    if -tol ≤ ξ[1] ≤ one(T) + tol && -tol ≤ ξ[2] ≤ one(T) + tol
+        return SVector{2, T}(clamp(ξ[1], zero(T), one(T)),
+                              clamp(ξ[2], zero(T), one(T)))
+    end
+    return _outside_xi(Val(2), T)
+end
+
 """
     patch_to_global(pd::PatchDesc{2, T}, ξ::SVector{2, T}) → SVector{2, T}
 
@@ -190,7 +236,7 @@ function patch_to_global(pd::PatchDesc{2, T}, ξ::SVector{2, T}) where {T}
         Q = sqrt(one(T) + b * b)
         f = (one(T) - a) * pi.L + a * pi.R1 / Q
         vx, vy = _patch_direction_vec_2d(pi.dir, b)
-        return SVector{2, T}(f * vx, f * vy)
+        return SVector{2, T}(pi.center[1] + f * vx, pi.center[2] + f * vy)
     elseif k === Shell
         ps = pd.shell
         a = ps.a_lo + (ps.a_hi - ps.a_lo) * ξ[1]
@@ -211,6 +257,16 @@ function patch_to_global(pd::PatchDesc{2, T}, ξ::SVector{2, T}) where {T}
         elseif dir == Int8(3);  return SVector{2, T}(b * r,  r)
         else                    return SVector{2, T}(b * r, -r)
         end
+    elseif k === BilinearQuad
+        q = pd.bilinear_quad
+        c00, c10, c11, c01 = q.corners
+        w00 = (one(T) - ξ[1]) * (one(T) - ξ[2])
+        w10 = ξ[1] * (one(T) - ξ[2])
+        w11 = ξ[1] * ξ[2]
+        w01 = (one(T) - ξ[1]) * ξ[2]
+        return SVector{2, T}(
+            w00 * c00[1] + w10 * c10[1] + w11 * c11[1] + w01 * c01[1],
+            w00 * c00[2] + w10 * c10[2] + w11 * c11[2] + w01 * c01[2])
     else
         # No 2D builder emits WarpedCubic (or any future kind) yet;
         # fail loudly rather than silently mis-reading another variant.
@@ -250,18 +306,22 @@ function global_to_patch(pd::PatchDesc{2, T}, p::SVector{2, T};
             pi = pd.inflation
             dir, a_lo_p, a_hi_p, b_lo_p, b_hi_p, L_or_R1, top =
                 (pi.dir, pi.a_lo, pi.a_hi, pi.b_lo, pi.b_hi, pi.L, pi.R1)
+            cx, cy = pi.center[1], pi.center[2]
         else
             ps = pd.shell
             dir, a_lo_p, a_hi_p, b_lo_p, b_hi_p, L_or_R1, top =
                 (ps.dir, ps.a_lo, ps.a_hi, ps.b_lo, ps.b_hi, ps.R1, ps.R2)
+            cx, cy = zero(T), zero(T)
         end
-        f_val, b = _inverse_dir_vec_2d(dir, p[1], p[2])
+        # Work in the patch's own (centred) frame.
+        px = p[1] - cx;  py = p[2] - cy
+        f_val, b = _inverse_dir_vec_2d(dir, px, py)
         if !(isfinite(b) && isfinite(f_val) && f_val > -tol)
             return NaN_ξ
         end
         Q = sqrt(one(T) + b * b)
         a = if k === Shell
-            r = sqrt(p[1]^2 + p[2]^2)
+            r = sqrt(px^2 + py^2)
             (r - L_or_R1) / (top - L_or_R1)
         else
             (f_val - L_or_R1) / (top / Q - L_or_R1)
@@ -273,6 +333,8 @@ function global_to_patch(pd::PatchDesc{2, T}, p::SVector{2, T};
                                   clamp(ξ_b, zero(T), one(T)))
         end
         return NaN_ξ
+    elseif k === BilinearQuad
+        return _invert_bilinear_quad(pd.bilinear_quad, p; tol)
     elseif k === Wedge
         w = pd.wedge
         f_val, b = _inverse_wedge_vec_2d(w.dir, p[1], p[2])

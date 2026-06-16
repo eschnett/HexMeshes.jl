@@ -4,12 +4,13 @@
 # land.
 
 using HexMeshes
-using HexMeshes: Mesh, PatchKind, Cubic, Wedge, Inflation, Shell,
-                 PatchDesc,
+using HexMeshes: Mesh, PatchKind, Cubic, Wedge, Inflation, Shell, BilinearQuad,
+                 PatchDesc, dims,
                  make_uniform_quad, make_cubed_square_mesh,
-                 make_inflated_square_mesh, make_annulus_mesh, nv, npatches,
+                 make_inflated_square_mesh, make_annulus_mesh, make_two_hole_mesh,
+                 nv, npatches,
                  element_vertices, element_point_and_jac, locate_point, invert_element_map,
-                 interpolate_field,
+                 interpolate_field, patch_to_global, global_to_patch,
                  bilinear_shape, bilinear_dshape,
                  bilinear_map, bilinear_jacobian,
                  _neigh_p
@@ -464,6 +465,128 @@ using Test
                 @test maximum(abs.((Pp .- Pm) ./ (2h) .- J[:, a])) < 1.0e-5
             end
         end
+    end
+
+    @testset "make_two_hole_mesh: shape, kinds, conformity, det J" begin
+        R1 = 1.0; R2 = 20.0; d = 10.0
+        m = make_two_hole_mesh(Float64, R1, R2, d, 3;
+                               A = 8.0, R_mid = 13.0,
+                               M_h = 2, M_b = 2, M_i = 2, M_s = 2)
+        @test m isa Mesh{2, Float64}
+        @test npatches(m) == 28
+        @test m.Ne == length(m.patch_id)
+        @test size(m.vertex_coords) == (2, nv(m))
+        @test size(m.vertex_idx) == (4, m.Ne)
+
+        # Patch-kind layout: 8 hole inflation, 8 butterfly, 6 outer
+        # inflation, 6 shell.
+        kinds = [pd.kind for pd in m.patch_desc]
+        @test kinds == [fill(Inflation, 8); fill(BilinearQuad, 8);
+                        fill(Inflation, 6); fill(Shell, 6)]
+
+        # Vertex dedup actually merged shared faces.
+        @test nv(m) < 4 * m.Ne
+
+        # Neighbour pointers symmetric.
+        for e in 1:m.Ne, f in 1:4
+            n = m.conn.neighbour[f, e]
+            n == 0 && continue
+            fb = m.conn.neighbour_face[f, e]
+            @test m.conn.neighbour[fb, n] == e
+        end
+
+        # Conformity: each patch's analytic map reproduces the deduped
+        # vertex coordinates exactly. This is the load-bearing check on
+        # the auto-wired connectivity — `_skeleton_to_mesh` writes one
+        # representative coordinate per vertex with no consistency check,
+        # so a wrong interface orientation would silently disagree here.
+        maxcoord = 0.0
+        for e in 1:m.Ne
+            pd = m.patch_desc[m.patch_id[e]]
+            dd = dims(pd)
+            cidx = (Int(m.patch_idx[1, e]), Int(m.patch_idx[2, e]))
+            for (c, off) in enumerate(((0, 0), (1, 0), (1, 1), (0, 1)))
+                ξ = SVector{2, Float64}((cidx[1] - 1 + off[1]) / dd[1],
+                                        (cidx[2] - 1 + off[2]) / dd[2])
+                P = patch_to_global(pd, ξ)
+                vid = m.vertex_idx[c, e]
+                maxcoord = max(maxcoord,
+                               abs(P[1] - m.vertex_coords[1, vid]),
+                               abs(P[2] - m.vertex_coords[2, vid]))
+            end
+        end
+        @test maxcoord ≤ 1.0e-12
+
+        # Every element positively oriented (det J > 0) — validates the
+        # reversed-radial hole inflation and the CCW butterfly winding.
+        for e in 1:m.Ne
+            for ξ in (SVector(0.25, 0.25), SVector(0.75, 0.25),
+                      SVector(0.25, 0.75), SVector(0.75, 0.75),
+                      SVector(0.5, 0.5))
+                _, J = element_point_and_jac(m, e, ξ)
+                @test det(J) > 0
+            end
+        end
+    end
+
+    @testset "make_two_hole_mesh: hole circles, outer circle, boundary tags" begin
+        R1 = 1.0; R2 = 20.0; d = 10.0; s = d / 2
+        m = make_two_hole_mesh(Float64, R1, R2, d, 3;
+                               A = 8.0, R_mid = 13.0,
+                               M_h = 2, M_b = 2, M_i = 2, M_s = 2)
+        corner_pairs = ((1, 4), (2, 3), (1, 2), (4, 3))  # local corners per face
+        n_inner = 0; n_outer = 0; maxr = 0.0
+        for e in 1:m.Ne, f in 1:4
+            m.conn.neighbour[f, e] == 0 || continue
+            tag = m.conn.bdry[f, e]
+            for vl in corner_pairs[f]
+                vid = m.vertex_idx[vl, e]
+                x = m.vertex_coords[1, vid]; y = m.vertex_coords[2, vid]
+                maxr = max(maxr, hypot(x, y))
+                if tag == 8           # excision: on one of the two hole circles
+                    @test min(hypot(x - s, y), hypot(x + s, y)) ≈ R1 atol = 1.0e-10
+                elseif tag == 1       # outer: on |x| = R2
+                    @test hypot(x, y) ≈ R2 atol = 1.0e-9
+                end
+            end
+            tag == 8 && (n_inner += 1)
+            tag == 1 && (n_outer += 1)
+        end
+        @test n_inner > 0
+        @test n_outer > 0
+        @test maxr ≤ R2 + 1.0e-9
+        # Only the hole-circle and outer-circle faces carry a boundary tag.
+        for e in 1:m.Ne, f in 1:4
+            @test (m.conn.bdry[f, e] ≠ 0) == (m.conn.neighbour[f, e] == 0)
+        end
+    end
+
+    @testset "make_two_hole_mesh: round-trip + bc variants + too-close error" begin
+        m = make_two_hole_mesh(Float64, 1.0, 20.0, 10.0, 3;
+                               A = 8.0, R_mid = 13.0,
+                               M_h = 2, M_b = 2, M_i = 2, M_s = 2)
+        # patch_to_global ↔ global_to_patch over all 28 patches (covers the
+        # BilinearQuad Newton inverse and the off-centre inflation inverse).
+        for p in 1:npatches(m)
+            pd = m.patch_desc[p]
+            for _ in 1:20
+                ξ = SVector{2, Float64}(rand(), rand())
+                x = patch_to_global(pd, ξ)
+                ξ2 = global_to_patch(pd, x)
+                @test !isnan(ξ2[1])
+                @test ξ2[1] ≈ ξ[1] atol = 1.0e-10
+                @test ξ2[2] ≈ ξ[2] atol = 1.0e-10
+            end
+        end
+        # outer Sommerfeld → tag 7 on the outer circle; inner excision → 8.
+        ms = make_two_hole_mesh(Float64, 1.0, 20.0, 10.0, 3;
+                                A = 8.0, R_mid = 13.0, M_h = 2, M_b = 2,
+                                M_i = 2, M_s = 2, outer_bc = :sommerfeld)
+        @test any(==(Int8(7)), ms.conn.bdry)
+        @test any(==(Int8(8)), ms.conn.bdry)
+        # Holes too close for the butterfly (L ≥ d/2) must error.
+        @test_throws AssertionError make_two_hole_mesh(Float64, 1.0, 20.0, 3.0, 3;
+                                                       L = 2.0, A = 8.0, R_mid = 13.0)
     end
 
 end

@@ -253,7 +253,7 @@ end
         dPa_x * da, dPa_y * da, dPa_z * da,
         dPb_x * db, dPb_y * db, dPb_z * db,
         dPc_x * dc, dPc_y * dc, dPc_z * dc)
-    P = SVector{3, T}(Px, Py, Pz)
+    P = SVector{3, T}(Px + pi.center[1], Py + pi.center[2], Pz + pi.center[3])
     return P, J
 end
 
@@ -410,7 +410,7 @@ end
 
     J = SMatrix{2, 2, T}(dPa_x * da, dPa_y * da,
                          dPb_x * db, dPb_y * db)
-    P = SVector{2, T}(Px, Py)
+    P = SVector{2, T}(Px + pi.center[1], Py + pi.center[2])
     return P, J
 end
 

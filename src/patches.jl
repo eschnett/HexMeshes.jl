@@ -47,11 +47,12 @@ apply to 1D / 2D / 3D meshes, though in 1D only `Cubic` is used by
 the current builders.
 """
 @enum PatchKind::Int8 begin
-    Cubic       = 1
-    Wedge       = 2
-    Inflation   = 3
-    Shell       = 4
-    WarpedCubic = 5
+    Cubic        = 1
+    Wedge        = 2
+    Inflation    = 3
+    Shell        = 4
+    WarpedCubic  = 5
+    BilinearQuad = 6
 end
 
 """
@@ -92,22 +93,37 @@ end
     PatchInflation{D, T}
 
 Radial bridge from an inner cube face to an inner sphere; physical
-embedding `P = f · v(b, c)` with
+embedding `P = center + f · v(b, c)` with
 `f(a) = (1−a)·L + a·R1/Q`, `Q = √(1 + b² + c²)`. Used as the middle
 layer of inflated meshes. `c_lo / c_hi` are unused for `D < 3`.
+
+`center` translates the whole patch (the sphere of radius `R1` and the
+square face at distance `L` are both centred there). It defaults to the
+origin via the convenience constructor, so origin-centred callers can
+omit it. Off-centre inflation is used e.g. by `make_two_hole_mesh`, where
+each circular hole sits at `(±d/2, 0)`; there the radial range is also
+reversed (`a_lo = 1`, `a_hi = 0`) so the structured radial index runs
+circle→square and `det J > 0`.
 """
 struct PatchInflation{D, T}
-    dims :: NTuple{D, Int}
-    dir  :: Int8
-    a_lo :: T
-    a_hi :: T
-    b_lo :: T
-    b_hi :: T
-    c_lo :: T
-    c_hi :: T
-    L    :: T
-    R1   :: T
+    dims   :: NTuple{D, Int}
+    dir    :: Int8
+    a_lo   :: T
+    a_hi   :: T
+    b_lo   :: T
+    b_hi   :: T
+    c_lo   :: T
+    c_hi   :: T
+    L      :: T
+    R1     :: T
+    center :: NTuple{D, T}
 end
+
+# Convenience constructor: origin-centred inflation (existing callers).
+@inline PatchInflation{D, T}(dims::NTuple{D, Int}, dir, a_lo, a_hi,
+                             b_lo, b_hi, c_lo, c_hi, L, R1) where {D, T} =
+    PatchInflation{D, T}(dims, Int8(dir), a_lo, a_hi, b_lo, b_hi, c_lo, c_hi,
+                         L, R1, ntuple(_ -> zero(T), Val(D)))
 
 """
     PatchShell{D, T}
@@ -158,6 +174,29 @@ struct PatchWarpedCubic{D, T}
     warp_kind :: Symbol             # :diagonal or :coupled
 end
 
+"""
+    PatchBilinearQuad{D, T}
+
+General straight-sided quadrilateral (D = 2) given by its four corner
+points, with the bilinear / transfinite-interpolation map
+
+    P(ξ, η) = (1−ξ)(1−η)·c00 + ξ(1−η)·c10 + ξη·c11 + (1−ξ)η·c01,   ξ, η ∈ [0, 1].
+
+`corners = (c00, c10, c11, c01)` in Gmsh-canonical winding (the same
+order the mesh stores element corners), i.e. ξ runs `c00→c10` and η runs
+`c00→c01`. `dims = (Mξ, Mη)`.
+
+The map restricted to any sub-rectangle is again bilinear, so element
+position/Jacobian go through the existing `bilinear_map` /
+`bilinear_jacobian` corner path (no analytic-Jacobian branch needed).
+Used as the intermediate "butterfly" blocks of `make_two_hole_mesh`; the
+first general straight-sided quad patch in the repo.
+"""
+struct PatchBilinearQuad{D, T}
+    dims    :: NTuple{D, Int}
+    corners :: NTuple{4, NTuple{D, T}}
+end
+
 # Internal zero-initialised dummy patches used to fill the unused
 # variants of `PatchDesc`. Not exported.
 @inline _dummy_cubic(::Type{T}, ::Val{D}) where {T, D} =
@@ -171,7 +210,8 @@ end
 @inline _dummy_inflation(::Type{T}, ::Val{D}) where {T, D} =
     (z = zero(T);
      PatchInflation{D, T}(ntuple(_ -> 0, Val(D)), Int8(0),
-                          z, z, z, z, z, z, z, z))
+                          z, z, z, z, z, z, z, z,
+                          ntuple(_ -> z, Val(D))))
 @inline _dummy_shell(::Type{T}, ::Val{D}) where {T, D} =
     (z = zero(T);
      PatchShell{D, T}(ntuple(_ -> 0, Val(D)), Int8(0),
@@ -181,6 +221,9 @@ end
                             ntuple(_ -> zero(T), Val(D)),
                             ntuple(_ -> zero(T), Val(D)),
                             zero(T), :diagonal)
+@inline _dummy_bilinear_quad(::Type{T}, ::Val{D}) where {T, D} =
+    PatchBilinearQuad{D, T}(ntuple(_ -> 0, Val(D)),
+                            ntuple(_ -> ntuple(_ -> zero(T), Val(D)), Val(4)))
 
 """
     PatchDesc{D, T}
@@ -210,12 +253,13 @@ Use [`dims`](@ref) / [`n_elements`](@ref) to read the active variant's
 structured-grid extent without manual branching.
 """
 struct PatchDesc{D, T}
-    kind         :: PatchKind
-    cubic        :: PatchCubic{D, T}
-    wedge        :: PatchWedge{D, T}
-    inflation    :: PatchInflation{D, T}
-    shell        :: PatchShell{D, T}
-    warped_cubic :: PatchWarpedCubic{D, T}
+    kind          :: PatchKind
+    cubic         :: PatchCubic{D, T}
+    wedge         :: PatchWedge{D, T}
+    inflation     :: PatchInflation{D, T}
+    shell         :: PatchShell{D, T}
+    warped_cubic  :: PatchWarpedCubic{D, T}
+    bilinear_quad :: PatchBilinearQuad{D, T}
 end
 
 PatchDesc(c::PatchCubic{D, T}) where {D, T} =
@@ -223,14 +267,16 @@ PatchDesc(c::PatchCubic{D, T}) where {D, T} =
                     _dummy_wedge(T, Val(D)),
                     _dummy_inflation(T, Val(D)),
                     _dummy_shell(T, Val(D)),
-                    _dummy_warped_cubic(T, Val(D)))
+                    _dummy_warped_cubic(T, Val(D)),
+                    _dummy_bilinear_quad(T, Val(D)))
 
 PatchDesc(w::PatchWedge{D, T}) where {D, T} =
     PatchDesc{D, T}(Wedge,
                     _dummy_cubic(T, Val(D)), w,
                     _dummy_inflation(T, Val(D)),
                     _dummy_shell(T, Val(D)),
-                    _dummy_warped_cubic(T, Val(D)))
+                    _dummy_warped_cubic(T, Val(D)),
+                    _dummy_bilinear_quad(T, Val(D)))
 
 PatchDesc(i::PatchInflation{D, T}) where {D, T} =
     PatchDesc{D, T}(Inflation,
@@ -238,7 +284,8 @@ PatchDesc(i::PatchInflation{D, T}) where {D, T} =
                     _dummy_wedge(T, Val(D)),
                     i,
                     _dummy_shell(T, Val(D)),
-                    _dummy_warped_cubic(T, Val(D)))
+                    _dummy_warped_cubic(T, Val(D)),
+                    _dummy_bilinear_quad(T, Val(D)))
 
 PatchDesc(s::PatchShell{D, T}) where {D, T} =
     PatchDesc{D, T}(Shell,
@@ -246,7 +293,8 @@ PatchDesc(s::PatchShell{D, T}) where {D, T} =
                     _dummy_wedge(T, Val(D)),
                     _dummy_inflation(T, Val(D)),
                     s,
-                    _dummy_warped_cubic(T, Val(D)))
+                    _dummy_warped_cubic(T, Val(D)),
+                    _dummy_bilinear_quad(T, Val(D)))
 
 PatchDesc(wc::PatchWarpedCubic{D, T}) where {D, T} =
     PatchDesc{D, T}(WarpedCubic,
@@ -254,7 +302,17 @@ PatchDesc(wc::PatchWarpedCubic{D, T}) where {D, T} =
                     _dummy_wedge(T, Val(D)),
                     _dummy_inflation(T, Val(D)),
                     _dummy_shell(T, Val(D)),
-                    wc)
+                    wc,
+                    _dummy_bilinear_quad(T, Val(D)))
+
+PatchDesc(bq::PatchBilinearQuad{D, T}) where {D, T} =
+    PatchDesc{D, T}(BilinearQuad,
+                    _dummy_cubic(T, Val(D)),
+                    _dummy_wedge(T, Val(D)),
+                    _dummy_inflation(T, Val(D)),
+                    _dummy_shell(T, Val(D)),
+                    _dummy_warped_cubic(T, Val(D)),
+                    bq)
 
 """
     dims(pd::PatchDesc{D, T}) → NTuple{D, Int}
@@ -265,11 +323,12 @@ active variant.
 """
 @inline function dims(pd::PatchDesc{D, T}) where {D, T}
     k = pd.kind
-    return k === Cubic       ? pd.cubic.dims        :
-           k === Wedge       ? pd.wedge.dims        :
-           k === Inflation   ? pd.inflation.dims    :
-           k === Shell       ? pd.shell.dims        :
-                                pd.warped_cubic.dims
+    return k === Cubic        ? pd.cubic.dims         :
+           k === Wedge        ? pd.wedge.dims         :
+           k === Inflation    ? pd.inflation.dims     :
+           k === Shell        ? pd.shell.dims         :
+           k === WarpedCubic  ? pd.warped_cubic.dims  :
+                                pd.bilinear_quad.dims
 end
 
 """
