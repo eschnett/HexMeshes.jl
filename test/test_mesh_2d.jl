@@ -589,4 +589,80 @@ using Test
                                                        L = 2.0, A = 8.0, R_mid = 13.0)
     end
 
+    @testset "make_two_hole_mesh: :touching mode (squares meet at x=0)" begin
+        # Close holes (R1 = 1, d = 4 ⇒ s = L = 2): the hole squares meet at
+        # x = 0, the two seam blocks are dropped → 26 patches.
+        R1 = 1.0; R2 = 20.0; d = 4.0; s = d / 2
+        m = make_two_hole_mesh(Float64, R1, R2, d, 3;
+                               A = 8.0, R_mid = 13.0,
+                               M_h = 2, M_b = 2, M_i = 2, M_s = 2,
+                               mode = :touching)
+        @test m isa Mesh{2, Float64}
+        @test npatches(m) == 26
+        kinds = [pd.kind for pd in m.patch_desc]
+        @test kinds == [fill(Inflation, 8); fill(BilinearQuad, 6);
+                        fill(Inflation, 6); fill(Shell, 6)]
+        @test nv(m) < 4 * m.Ne
+
+        # Neighbour symmetry.
+        for e in 1:m.Ne, f in 1:4
+            n = m.conn.neighbour[f, e]
+            n == 0 && continue
+            @test m.conn.neighbour[m.conn.neighbour_face[f, e], n] == e
+        end
+
+        # Conformity + orientation: the load-bearing checks on the new
+        # valence-6 vertices at (0, ±s) where the touching squares and the
+        # T1/T2, B1/B2 spokes meet.
+        maxcoord = 0.0
+        for e in 1:m.Ne
+            pd = m.patch_desc[m.patch_id[e]]
+            dd = dims(pd)
+            cidx = (Int(m.patch_idx[1, e]), Int(m.patch_idx[2, e]))
+            for (c, off) in enumerate(((0, 0), (1, 0), (1, 1), (0, 1)))
+                ξ = SVector{2, Float64}((cidx[1] - 1 + off[1]) / dd[1],
+                                        (cidx[2] - 1 + off[2]) / dd[2])
+                P = patch_to_global(pd, ξ)
+                vid = m.vertex_idx[c, e]
+                maxcoord = max(maxcoord, abs(P[1] - m.vertex_coords[1, vid]),
+                                         abs(P[2] - m.vertex_coords[2, vid]))
+            end
+            for ξ in (SVector(0.25, 0.25), SVector(0.75, 0.75), SVector(0.5, 0.5))
+                _, J = element_point_and_jac(m, e, ξ)
+                @test det(J) > 0
+            end
+        end
+        @test maxcoord ≤ 1.0e-12
+
+        # The two hole squares share the edge x = 0, y ∈ [−s, s]: some
+        # vertices land exactly on x = 0 between the holes.
+        @test any(v -> abs(m.vertex_coords[1, v]) < 1.0e-12 &&
+                       abs(m.vertex_coords[2, v]) ≤ s + 1.0e-12, 1:nv(m))
+
+        # Round-trip over all 26 patches.
+        for p in 1:npatches(m)
+            pd = m.patch_desc[p]
+            for _ in 1:20
+                ξ = SVector{2, Float64}(rand(), rand())
+                ξ2 = global_to_patch(pd, patch_to_global(pd, ξ))
+                @test !isnan(ξ2[1])
+                @test ξ2[1] ≈ ξ[1] atol = 1.0e-10
+                @test ξ2[2] ≈ ξ[2] atol = 1.0e-10
+            end
+        end
+
+        # `L` is fixed in :touching mode; passing it errors.
+        @test_throws ErrorException make_two_hole_mesh(Float64, R1, R2, d, 3;
+                                                       L = 1.5, A = 8.0, R_mid = 13.0,
+                                                       mode = :touching)
+        # Holes must fit (R1 < d/2).
+        @test_throws AssertionError make_two_hole_mesh(Float64, 1.0, 20.0, 1.5, 3;
+                                                       A = 8.0, R_mid = 13.0,
+                                                       mode = :touching)
+        # Unknown mode errors.
+        @test_throws ErrorException make_two_hole_mesh(Float64, R1, R2, d, 3;
+                                                       A = 8.0, R_mid = 13.0,
+                                                       mode = :bogus)
+    end
+
 end

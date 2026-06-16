@@ -135,8 +135,15 @@ Boundary tagging (via `_shell_bc_tag`): the two hole circles use
 `inner_bc` (default `:excision` → `bdry = 8`), the outer circle uses
 `outer_bc` (default `:dirichlet` → `bdry = 1`).
 
-The holes are assumed sufficiently far apart (`L ≪ d/2`) that the two
-seam blocks straddling `x = 0` are well-shaped.
+`mode` selects the intermediate-region topology:
+
+* `:separated` (default) — the 28-patch layout above, with two seam blocks
+  spanning `x = 0`. Assumes the holes are far enough apart (`L ≪ d/2`) that
+  those blocks are well-shaped.
+* `:touching` — for close holes: the two hole squares meet directly at
+  `x = 0` (which forces `L = d/2`, so `L` may not be set explicitly), the
+  two seam blocks are dropped, and the mesh has **26 patches** (6 butterfly
+  blocks). Requires `R1 < d/2`. Two valence-6 vertices appear at `(0, ±d/2)`.
 """
 function make_two_hole_mesh(::Type{T}, R1::Real, R2::Real, d::Real, M::Int;
                             L::Union{Nothing, Real} = nothing,
@@ -147,9 +154,10 @@ function make_two_hole_mesh(::Type{T}, R1::Real, R2::Real, d::Real, M::Int;
                             M_i::Union{Nothing, Int} = nothing,
                             M_s::Union{Nothing, Int} = nothing,
                             outer_bc::Symbol = :dirichlet,
-                            inner_bc::Symbol = :excision) where {T}
+                            inner_bc::Symbol = :excision,
+                            mode::Symbol = :separated) where {T}
     skel = _two_hole_skeleton(T, R1, R2, d, M; L, A, R_mid,
-                              M_h, M_b, M_i, M_s, outer_bc, inner_bc)
+                              M_h, M_b, M_i, M_s, outer_bc, inner_bc, mode)
     return _skeleton_to_mesh(skel)
 end
 
@@ -162,9 +170,14 @@ function _two_hole_skeleton(::Type{T}, R1::Real, R2::Real, d::Real, M::Int;
                             M_i::Union{Nothing, Int} = nothing,
                             M_s::Union{Nothing, Int} = nothing,
                             outer_bc::Symbol = :dirichlet,
-                            inner_bc::Symbol = :excision) where {T}
+                            inner_bc::Symbol = :excision,
+                            mode::Symbol = :separated) where {T}
     outer_tag = _shell_bc_tag(outer_bc; outer = true)
     inner_tag = _shell_bc_tag(inner_bc; outer = false)
+    mode === :separated || mode === :touching ||
+        error("make_two_hole_mesh: mode must be :separated or :touching, " *
+              "got $(repr(mode))")
+    touching = mode === :touching
     @assert M ≥ 1
     @assert R1 > 0
     @assert R2 > 0
@@ -172,11 +185,19 @@ function _two_hole_skeleton(::Type{T}, R1::Real, R2::Real, d::Real, M::Int;
     # Geometry in Float64 (counts use `round`, which MultiFloats lack).
     R1f = Float64(R1);  R2f = Float64(R2)
     sf  = Float64(d) / 2
-    Lf  = L     === nothing ? 1.5 * R1f          : Float64(L)
+    # :touching forces L = d/2 so the two hole squares meet at x = 0.
+    if touching
+        L === nothing ||
+            error("make_two_hole_mesh: `L` is fixed to d/2 in :touching mode; " *
+                  "do not pass it.")
+        Lf = sf
+    else
+        Lf = L === nothing ? 1.5 * R1f : Float64(L)
+    end
     Af  = A     === nothing ? 2.0 * (sf + Lf)    : Float64(A)
     Rmf = R_mid === nothing ? 1.5 * sqrt(2.0) * Af : Float64(R_mid)
-    @assert R1f < Lf  "hole-square half-side L must exceed R1 (square encloses circle)"
-    @assert Lf < sf   "holes overlap: need L < d/2"
+    @assert R1f < Lf  "hole-square half-side L must exceed R1 (square encloses circle); in :touching mode this means R1 < d/2"
+    touching || @assert Lf < sf  "holes overlap: need L < d/2 (use mode=:touching for close holes where the squares meet)"
     @assert Af > sf + Lf  "big square must contain the hole squares (A > d/2 + L)"
     @assert sqrt(2.0) * Af < Rmf  "R_mid must enclose the big-square corner (√2·A)"
     @assert Rmf < R2f  "R_mid must be inside the outer circle R2"
@@ -222,18 +243,23 @@ function _two_hole_skeleton(::Type{T}, R1::Real, R2::Real, d::Real, M::Int;
         end
         return PatchDesc(PatchBilinearQuad{2, T}((M, Rb), (h0, h1, o1, o0)))
     end
-    # hole 1 (centre −s): left, top, right(→seam), bottom
+    # hole 1 (centre −s): left, top, bottom (+ right→seam unless touching)
     push!(patches, bq((-sv - Lv, -Lv), (-sv - Lv,  Lv), (-Av, -Av), (-Av,  Av)))  # L1
     push!(patches, bq((-sv - Lv,  Lv), (-sv + Lv,  Lv), (-Av,  Av), (  z,  Av)))  # T1
-    push!(patches, bq((-sv + Lv, -Lv), (-sv + Lv,  Lv), (  z, -Av), (  z,  Av)))  # R1 (seam)
     push!(patches, bq((-sv - Lv, -Lv), (-sv + Lv, -Lv), (-Av, -Av), (  z, -Av)))  # B1
-    # hole 2 (centre +s): right, top, left(→seam), bottom
+    # hole 2 (centre +s): right, top, bottom (+ left→seam unless touching)
     push!(patches, bq(( sv + Lv, -Lv), ( sv + Lv,  Lv), ( Av, -Av), ( Av,  Av)))  # R2
     push!(patches, bq(( sv - Lv,  Lv), ( sv + Lv,  Lv), (  z,  Av), ( Av,  Av)))  # T2
-    push!(patches, bq(( sv - Lv, -Lv), ( sv - Lv,  Lv), (  z, -Av), (  z,  Av)))  # L2 (seam)
     push!(patches, bq(( sv - Lv, -Lv), ( sv + Lv, -Lv), (  z, -Av), ( Av, -Av)))  # B2
+    # Seam blocks — only when the hole squares do NOT meet at x = 0. When
+    # touching (L = s) the squares share their x = 0 edge directly, the
+    # T1/T2 and B1/B2 spokes meet on x = 0, and these two blocks vanish.
+    if !touching
+        push!(patches, bq((-sv + Lv, -Lv), (-sv + Lv, Lv), (z, -Av), (z, Av)))   # R1 (seam)
+        push!(patches, bq(( sv - Lv, -Lv), ( sv - Lv, Lv), (z, -Av), (z, Av)))   # L2 (seam)
+    end
 
-    # --- 3. Outer inflation (patches 17–22) + shell (patches 23–28).
+    # --- 3. Outer ring: 6 inflation + 6 shell (always the last 12 patches).
     #        Left/right are full edges; top/bottom split at x = 0 (b = 0)
     #        to match the butterfly seam. ------------------------------
     outer_specs = ((2, -o,  o),   # left  (−x), full
@@ -252,16 +278,18 @@ function _two_hole_skeleton(::Type{T}, R1::Real, R2::Real, d::Real, M::Int;
                                                   z, o, blo, bhi, z, z,
                                                   Rmv, R2v)))
     end
-    @assert length(patches) == 28
+    @assert length(patches) == (touching ? 26 : 28)
 
     # --- Faces: boundaries explicit, interior auto-wired. ---------------
+    # Holes are always the first 8 patches; the 6 shells are always the
+    # last 6 (the butterfly count between them is 8 or 6 by mode).
     faces = Matrix{FaceLink}(undef, 4, length(patches))
     boundary = Tuple{Int, Int}[]
     for p in 1:8                       # hole circles (face 1 = a_lo = circle)
         faces[1, p] = boundary_link(inner_tag)
         push!(boundary, (p, 1))
     end
-    for p in 23:28                     # outer circle (face 2 = a_hi = R2)
+    for p in (length(patches) - 5):length(patches)   # outer circle (shell face 2 = R2)
         faces[2, p] = boundary_link(outer_tag)
         push!(boundary, (p, 2))
     end
