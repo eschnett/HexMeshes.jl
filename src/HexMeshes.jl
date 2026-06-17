@@ -86,6 +86,8 @@ include("inflated_square.jl")
 include("annulus.jl")
 # 2D host-side queries + 2D analytic patch maps.
 include("queries_2d.jl")
+# Host-side Jacobian-based mesh-quality diagnostics (`mesh_quality`).
+include("quality.jl")
 
 export
     # Topology
@@ -114,6 +116,8 @@ export
     # Host-side queries
     element_vertices, locate_point, invert_element_map, interpolate_field,
     default_tol,
+    # Mesh-quality diagnostics
+    mesh_quality,
     # Analytic patch ↔ global coordinate maps and point location
     patch_to_global, global_to_patch,
     locate_patch, locate_element_in_patch,
