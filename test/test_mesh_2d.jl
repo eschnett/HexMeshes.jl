@@ -742,4 +742,41 @@ using Test
         end
     end
 
+    @testset "mesh_quality: distortion diagnostics" begin
+        # A uniform quad is ideal: scaled Jacobian, condition number, and
+        # aspect ratio all 1, nothing inverted.
+        q = mesh_quality(make_uniform_quad(Float64, 4, 0.0, 1.0))
+        @test q.min_scaled_jacobian  ≈ 1.0 atol = 1e-12
+        @test q.max_condition_number ≈ 1.0 atol = 1e-12
+        @test q.max_aspect_ratio     ≈ 1.0 atol = 1e-12
+        @test q.n_inverted == 0
+        @test length(q.element_scaled_jacobian) ==
+              make_uniform_quad(Float64, 4, 0.0, 1.0).Ne
+
+        # inflated_square: shrinking the inner square (smaller L) stretches the
+        # inflation patches — aspect ratio and condition number rise
+        # monotonically, while orientation stays sound.
+        asp = Float64[]
+        for L in (0.6, 0.4, 0.2, 0.1)
+            qq = mesh_quality(make_inflated_square_mesh(Float64, L, 1.0, 3.0, 5))
+            @test qq.n_inverted == 0
+            @test qq.min_scaled_jacobian > 0
+            push!(asp, qq.max_aspect_ratio)
+        end
+        @test issorted(asp)                 # distortion increases as L → 0
+        @test length(asp) == length(unique(asp))
+
+        # two-hole: in :separated mode the seam blocks fan as the holes
+        # approach, so the min scaled Jacobian (orthogonality) degrades with
+        # decreasing d; :touching mode (squares meet, no seam blocks) keeps it
+        # bounded away from zero and is far healthier for close holes.
+        sep_far  = mesh_quality(make_two_hole_mesh(Float64, 1.0, 100.0, 10.0, 4))
+        sep_near = mesh_quality(make_two_hole_mesh(Float64, 1.0, 100.0, 4.0, 4))
+        @test sep_near.min_scaled_jacobian < sep_far.min_scaled_jacobian
+        @test sep_far.n_inverted == 0 && sep_near.n_inverted == 0
+        tou_near = mesh_quality(make_two_hole_mesh(Float64, 1.0, 100.0, 4.0, 4; mode = :touching))
+        @test tou_near.n_inverted == 0
+        @test tou_near.min_scaled_jacobian > sep_near.min_scaled_jacobian
+    end
+
 end
