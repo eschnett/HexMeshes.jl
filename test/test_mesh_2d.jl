@@ -779,4 +779,35 @@ using Test
         @test tou_near.min_scaled_jacobian > sep_near.min_scaled_jacobian
     end
 
+    @testset "make_two_hole_mesh: production setups are well-conditioned" begin
+        # The two canonical binary-excision configurations (outer R = 100, hole
+        # r = 1): well-separated holes (d = 10, :separated) and close holes
+        # (d = 4, :touching). (d = 2 would be the degenerate tangent limit —
+        # :touching needs d > 2·r so the hole square strictly encloses the
+        # circle.) Modest balanced radial counts keep the meshes small and the
+        # outer shell roughly isotropic; min_scaled_jacobian (the orthogonality
+        # metric) is geometry-only and resolution-independent.
+        #
+        # Measured (M = 4, M_h=M_b=M_i=3, M_s=4):
+        #   well-separated: min_sJ 0.2912, max_cond 9.50, max_asp 18.94
+        #   close:          min_sJ 0.5547, max_cond 4.94, max_asp  9.79
+        for (label, m, npatch, sj, cond, asp) in (
+            ("well-separated (d=10)",
+             make_two_hole_mesh(Float64, 1.0, 100.0, 10.0, 4; M_h = 3, M_b = 3, M_i = 3, M_s = 4),
+             28, 0.27, 11.0, 22.0),
+            ("close (d=4, touching)",
+             make_two_hole_mesh(Float64, 1.0, 100.0, 4.0, 4; M_h = 3, M_b = 3, M_i = 3, M_s = 4,
+                                mode = :touching),
+             26, 0.50, 6.0, 11.0),
+        )
+            @test m isa Mesh{2, Float64}
+            @test npatches(m) == npatch
+            q = mesh_quality(m)
+            @test q.n_inverted == 0                       # nothing tangled
+            @test q.min_scaled_jacobian > sj              # orthogonal / non-degenerate
+            @test q.max_condition_number < cond           # bounded shape distortion
+            @test q.max_aspect_ratio < asp                # bounded anisotropy
+        end
+    end
+
 end
