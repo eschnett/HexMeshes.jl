@@ -253,7 +253,7 @@ end
         dPa_x * da, dPa_y * da, dPa_z * da,
         dPb_x * db, dPb_y * db, dPb_z * db,
         dPc_x * dc, dPc_y * dc, dPc_z * dc)
-    P = SVector{3, T}(Px, Py, Pz)
+    P = SVector{3, T}(Px + pi.center[1], Py + pi.center[2], Pz + pi.center[3])
     return P, J
 end
 
@@ -270,6 +270,13 @@ end
         return (one(T) - a) * R1 + a * R2, R2 - R1
     end
 end
+
+# Inverse of `_shell_radius`'s radius map: the parameter `a` for a given
+# radius `r`. Finite `R2` inverts the linear map `r = (1−a)·R1 + a·R2`;
+# `R2 = Inf` inverts the compactified map `r = R1/(1−a)`. Used by the Shell
+# branch of `global_to_patch` so point location works on compactified meshes.
+@inline _shell_radius_inv(R1::T, R2::T, r::T) where {T} =
+    isinf(R2) ? (one(T) - R1 / r) : (r - R1) / (R2 - R1)
 
 @inline function _ppj_shell_3d(ps::PatchShell{3, T},
                                  idx::NTuple{3, <:Integer},
@@ -410,7 +417,7 @@ end
 
     J = SMatrix{2, 2, T}(dPa_x * da, dPa_y * da,
                          dPb_x * db, dPb_y * db)
-    P = SVector{2, T}(Px, Py)
+    P = SVector{2, T}(Px + pi.center[1], Py + pi.center[2])
     return P, J
 end
 

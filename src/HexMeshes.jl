@@ -84,6 +84,8 @@ include("builders_2d.jl")
 include("inflated_square.jl")
 # 2D `make_annulus_mesh` (pure shell ring; 2D analog of radial_shell).
 include("annulus.jl")
+# 2D `make_two_hole_mesh` (disk with two circular holes; binary excision).
+include("two_hole.jl")
 # 2D host-side queries + 2D analytic patch maps.
 include("queries_2d.jl")
 # Host-side Jacobian-based mesh-quality diagnostics (`mesh_quality`).
@@ -96,8 +98,9 @@ export
     # `Cubic` / `Wedge` / `Inflation` / `Shell` are the four geometric
     # families a `PatchDesc{D, T}` may carry; constructors take one of
     # the variant types and zero-initialise the others.
-    PatchKind, Cubic, Wedge, Inflation, Shell, WarpedCubic,
+    PatchKind, Cubic, Wedge, Inflation, Shell, WarpedCubic, BilinearQuad,
     PatchCubic, PatchWedge, PatchInflation, PatchShell, PatchWarpedCubic,
+    PatchBilinearQuad,
     PatchDesc,
     dims, n_elements,
     # Face-orientation group marker (`OrientationGroup{2}` = D₁,
@@ -111,6 +114,7 @@ export
     make_warped_uniform_hex,
     make_line_mesh, make_quad_mesh, make_cubical_mesh,
     make_cubed_square_mesh, make_inflated_square_mesh, make_annulus_mesh,
+    make_two_hole_mesh,
     make_cubed_cube_mesh, make_inflated_cube_mesh,
     make_radial_shell_mesh, make_compactified_shell_mesh,
     # Host-side queries

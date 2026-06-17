@@ -137,9 +137,26 @@ function _patch_vertex_position(pd::PatchDesc{D, T},
         return _vert_inflation(pd.inflation, idx)
     elseif k === Shell
         return _vert_shell(pd.shell, idx)
-    else  # WarpedCubic
+    elseif k === WarpedCubic
         return _vert_warped_cubic(pd.warped_cubic, idx)
+    else  # BilinearQuad
+        return _vert_bilinear_quad(pd.bilinear_quad, idx)
     end
+end
+
+# BilinearQuad — D = 2. Bilinear interpolation of the four corners at the
+# 0-indexed grid vertex (idx[1], idx[2]) ∈ 0..dims.
+@inline function _vert_bilinear_quad(q::PatchBilinearQuad{2, T},
+                                      idx::NTuple{2, <:Integer}) where {T}
+    ξ = T(idx[1]) / T(q.dims[1])
+    η = T(idx[2]) / T(q.dims[2])
+    c00, c10, c11, c01 = q.corners
+    w00 = (one(T) - ξ) * (one(T) - η)
+    w10 = ξ * (one(T) - η)
+    w11 = ξ * η
+    w01 = (one(T) - ξ) * η
+    return (w00 * c00[1] + w10 * c10[1] + w11 * c11[1] + w01 * c01[1],
+            w00 * c00[2] + w10 * c10[2] + w11 * c11[2] + w01 * c01[2])
 end
 
 # WarpedCubic — works for any D. The 0-indexed `idx` lands at the
@@ -224,7 +241,7 @@ end
     Q = sqrt(one(T) + b * b)
     vx, vy = _patch_direction_vec_2d(i.dir, b)
     f = (one(T) - a) * i.L + a * i.R1 / Q
-    return (f * vx, f * vy)
+    return (i.center[1] + f * vx, i.center[2] + f * vy)
 end
 
 @inline function _vert_inflation(i::PatchInflation{3, T},
@@ -235,7 +252,7 @@ end
     Q = sqrt(one(T) + b * b + c * c)
     vx, vy, vz = _patch_direction_vec(i.dir, b, c)
     f = (one(T) - a) * i.L + a * i.R1 / Q
-    return (f * vx, f * vy, f * vz)
+    return (i.center[1] + f * vx, i.center[2] + f * vy, i.center[3] + f * vz)
 end
 
 # Shell — D = 2 and 3.

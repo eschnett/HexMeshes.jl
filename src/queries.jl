@@ -210,14 +210,16 @@ function patch_to_global(pd::PatchDesc{3, T}, ξ::SVector{3, T}) where {T}
         Q = sqrt(one(T) + b * b + c * c)
         f = (one(T) - a) * pi.L + a * pi.R1 / Q
         vx, vy, vz = _patch_direction_vec(pi.dir, b, c)
-        return SVector{3, T}(f * vx, f * vy, f * vz)
+        return SVector{3, T}(pi.center[1] + f * vx,
+                             pi.center[2] + f * vy,
+                             pi.center[3] + f * vz)
     elseif k === Shell
         ps = pd.shell
         a = ps.a_lo + (ps.a_hi - ps.a_lo) * ξ[1]
         b = ps.b_lo + (ps.b_hi - ps.b_lo) * ξ[2]
         c = ps.c_lo + (ps.c_hi - ps.c_lo) * ξ[3]
         Q = sqrt(one(T) + b * b + c * c)
-        r = (one(T) - a) * ps.R1 + a * ps.R2
+        r, _ = _shell_radius(ps.R1, ps.R2, a)   # handles R2 = Inf (compactified)
         f = r / Q
         vx, vy, vz = _patch_direction_vec(ps.dir, b, c)
         return SVector{3, T}(f * vx, f * vy, f * vz)
@@ -289,20 +291,24 @@ function global_to_patch(pd::PatchDesc{3, T}, p::SVector{3, T};
             dir, a_lo_p, a_hi_p, b_lo_p, b_hi_p, c_lo_p, c_hi_p, L_or_R1, top =
                 (pi.dir, pi.a_lo, pi.a_hi, pi.b_lo, pi.b_hi, pi.c_lo, pi.c_hi,
                  pi.L, pi.R1)
+            cx, cy, cz = pi.center[1], pi.center[2], pi.center[3]
         else
             ps = pd.shell
             dir, a_lo_p, a_hi_p, b_lo_p, b_hi_p, c_lo_p, c_hi_p, L_or_R1, top =
                 (ps.dir, ps.a_lo, ps.a_hi, ps.b_lo, ps.b_hi, ps.c_lo, ps.c_hi,
                  ps.R1, ps.R2)
+            cx, cy, cz = zero(T), zero(T), zero(T)
         end
-        f_val, b, c = _inverse_dir_vec_3d(dir, p[1], p[2], p[3])
+        # Work in the patch's own (centred) frame.
+        px = p[1] - cx;  py = p[2] - cy;  pz = p[3] - cz
+        f_val, b, c = _inverse_dir_vec_3d(dir, px, py, pz)
         if !(isfinite(b) && isfinite(c) && isfinite(f_val) && f_val > -tol)
             return NaN_ξ
         end
         Q = sqrt(one(T) + b * b + c * c)
         a = if k === Shell
-            r = sqrt(p[1]^2 + p[2]^2 + p[3]^2)
-            (r - L_or_R1) / (top - L_or_R1)
+            r = sqrt(px^2 + py^2 + pz^2)
+            _shell_radius_inv(L_or_R1, top, r)   # handles R2 = Inf (compactified)
         else
             (f_val - L_or_R1) / (top / Q - L_or_R1)
         end

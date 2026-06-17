@@ -78,6 +78,38 @@ function render(out_dir::AbstractString = joinpath(@__DIR__, "..", "docs", "src"
     plot_mesh!(ax_is, mesh_is)
     save(joinpath(out_dir, "mesh_inflated_square.png"), fig_is)
 
-    println("wrote 3 PNGs to ", out_dir)
+    # ── two_hole ──────────────────────────────────────────────────
+    # 28 patches: a disk |x| ≤ R2 with two circular holes (radius R1)
+    # centred at (±d/2, 0). 8 hole-inflation + 8 "butterfly" BilinearQuad
+    # + 6 outer-inflation + 6 shell patches. Holes are far apart relative
+    # to the hole-square half-side so the seam blocks stay well-shaped.
+    mesh_th = make_two_hole_mesh(T, T(1.0), T(16.0), T(8.0), 5;
+                                 A = T(6.0), R_mid = T(9.0),
+                                 M_h = 2, M_b = 2, M_i = 3, M_s = 5)
+    fig_th  = Figure(; size = fig_size)
+    ax_th   = Axis(fig_th[1, 1];
+                   title  = "make_two_hole_mesh (R1 = 1, R2 = 16, d = 8)",
+                   xlabel = "x", ylabel = "y",
+                   aspect = DataAspect())
+    plot_mesh!(ax_th, mesh_th)
+    save(joinpath(out_dir, "mesh_two_hole.png"), fig_th)
+
+    # ── two_hole, :touching mode ──────────────────────────────────
+    # Close holes (R1 = 1, d = 4 ⇒ the hole squares meet at x = 0). The
+    # two seam blocks are dropped → 26 patches, with valence-6 vertices
+    # where the squares and the top/bottom spokes meet on the axis.
+    mesh_tt = make_two_hole_mesh(T, T(1.0), T(16.0), T(4.0), 5;
+                                 A = T(6.0), R_mid = T(10.0),
+                                 M_h = 2, M_b = 2, M_i = 3, M_s = 5,
+                                 mode = :touching)
+    fig_tt  = Figure(; size = fig_size)
+    ax_tt   = Axis(fig_tt[1, 1];
+                   title  = "make_two_hole_mesh (R1 = 1, R2 = 16, d = 4, :touching)",
+                   xlabel = "x", ylabel = "y",
+                   aspect = DataAspect())
+    plot_mesh!(ax_tt, mesh_tt)
+    save(joinpath(out_dir, "mesh_two_hole_touching.png"), fig_tt)
+
+    println("wrote 5 PNGs to ", out_dir)
     return out_dir
 end
