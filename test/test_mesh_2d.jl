@@ -665,4 +665,81 @@ using Test
                                                        mode = :bogus)
     end
 
+    @testset "2D compactified outer boundary (R2 = Inf)" begin
+        # `R2 = Inf` maps every outer shell's outer face to spatial infinity
+        # i⁰ (`r(a) = R1/(1−a)`). Topology is unchanged from the finite mesh;
+        # only the radial geometry differs.
+        # Finite siblings use the SAME outer-shell count as the compactified
+        # mesh (whose default is `M`), so the topology — element counts and
+        # neighbours — is identical; only the radial geometry differs.
+        cases = (
+            ("inflated_square", make_inflated_square_mesh(Float64, 0.1, 0.3, Inf, 4; M_s = 3),
+                                make_inflated_square_mesh(Float64, 0.1, 0.3, 1.0, 4; M_s = 3)),
+            ("annulus",         make_annulus_mesh(Float64, 1.0, Inf, 4; M_r = 3),
+                                make_annulus_mesh(Float64, 1.0, 2.0, 4; M_r = 3)),
+            ("two_hole sep",    make_two_hole_mesh(Float64, 1.0, Inf, 10.0, 3;
+                                    A = 8.0, R_mid = 13.0, M_h = 2, M_b = 2, M_i = 2, M_s = 2),
+                                make_two_hole_mesh(Float64, 1.0, 50.0, 10.0, 3;
+                                    A = 8.0, R_mid = 13.0, M_h = 2, M_b = 2, M_i = 2, M_s = 2)),
+            ("two_hole touch",  make_two_hole_mesh(Float64, 1.0, Inf, 4.0, 3;
+                                    A = 8.0, R_mid = 13.0, M_h = 2, M_b = 2, M_i = 2, M_s = 2,
+                                    mode = :touching),
+                                make_two_hole_mesh(Float64, 1.0, 50.0, 4.0, 3;
+                                    A = 8.0, R_mid = 13.0, M_h = 2, M_b = 2, M_i = 2, M_s = 2,
+                                    mode = :touching)),
+        )
+        for (name, m, mfin) in cases
+            # Same topology as the finite sibling; i⁰ face puts vertices at ∞.
+            @test npatches(m) == npatches(mfin)
+            @test m.Ne == mfin.Ne
+            @test m.conn.neighbour == mfin.conn.neighbour
+            @test any(isinf, m.vertex_coords)
+            # Interior elements: finite, positively-oriented Jacobian.
+            for e in 1:m.Ne
+                _, J = element_point_and_jac(m, e, SVector(0.3, 0.6))
+                @test all(isfinite, J)
+                @test det(J) > 0
+            end
+            # Analytic maps round-trip on finite (interior) points — the
+            # regression that the Shell-branch fix addresses. (Samples that
+            # land on the i⁰ face give a non-finite point and are skipped.)
+            for p in 1:npatches(m)
+                pd = m.patch_desc[p]
+                for _ in 1:25
+                    ξ = SVector{2, Float64}(rand(), rand())
+                    x = patch_to_global(pd, ξ)
+                    all(isfinite, x) || continue
+                    ξ2 = global_to_patch(pd, x)
+                    @test !isnan(ξ2[1])
+                    @test ξ2[1] ≈ ξ[1] atol = 1.0e-10
+                    @test ξ2[2] ≈ ξ[2] atol = 1.0e-10
+                end
+            end
+        end
+    end
+
+    @testset "make_two_hole_mesh: precision- and geometry-independence" begin
+        # Connectivity is a frozen integer table (no floating-point comparison
+        # in the builder), so it must assemble correctly at any precision and
+        # for strongly distorted geometries — a tolerance-based wiring could
+        # not guarantee this.
+        for m in (make_two_hole_mesh(Float32, 1.0f0, 100.0f0, 10.0f0, 3),
+                  make_two_hole_mesh(Float32, 1.0f0, 100.0f0, 4.0f0, 3; mode = :touching),
+                  make_two_hole_mesh(Float64, 0.3, 37.0, 18.0, 4; A = 11.0, R_mid = 20.0))
+            @test npatches(m) ∈ (26, 28)
+            T = eltype(m.vertex_coords)
+            # Neighbour symmetry + positive orientation everywhere ⇒ the frozen
+            # connectivity produced a sound, untangled mesh at this precision.
+            for e in 1:m.Ne
+                _, J = element_point_and_jac(m, e, SVector{2, T}(T(0.4), T(0.55)))
+                @test det(J) > 0
+                for f in 1:4
+                    n = m.conn.neighbour[f, e]
+                    n == 0 && continue
+                    @test m.conn.neighbour[m.conn.neighbour_face[f, e], n] == e
+                end
+            end
+        end
+    end
+
 end

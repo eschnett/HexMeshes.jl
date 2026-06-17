@@ -219,7 +219,7 @@ function patch_to_global(pd::PatchDesc{3, T}, ξ::SVector{3, T}) where {T}
         b = ps.b_lo + (ps.b_hi - ps.b_lo) * ξ[2]
         c = ps.c_lo + (ps.c_hi - ps.c_lo) * ξ[3]
         Q = sqrt(one(T) + b * b + c * c)
-        r = (one(T) - a) * ps.R1 + a * ps.R2
+        r, _ = _shell_radius(ps.R1, ps.R2, a)   # handles R2 = Inf (compactified)
         f = r / Q
         vx, vy, vz = _patch_direction_vec(ps.dir, b, c)
         return SVector{3, T}(f * vx, f * vy, f * vz)
@@ -308,7 +308,7 @@ function global_to_patch(pd::PatchDesc{3, T}, p::SVector{3, T};
         Q = sqrt(one(T) + b * b + c * c)
         a = if k === Shell
             r = sqrt(px^2 + py^2 + pz^2)
-            (r - L_or_R1) / (top - L_or_R1)
+            _shell_radius_inv(L_or_R1, top, r)   # handles R2 = Inf (compactified)
         else
             (f_val - L_or_R1) / (top / Q - L_or_R1)
         end

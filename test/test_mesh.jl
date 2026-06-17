@@ -506,4 +506,34 @@ count_zero_neighbours(m::Mesh{3}) = count(==(0), m.conn.neighbour)
         @test norm(Po) > 50.0
     end
 
+    @testset "compactified analytic maps round-trip (R2 = Inf)" begin
+        T = Float64
+        # The Shell branch of patch_to_global / global_to_patch must handle
+        # R2 = Inf. Regression: before the fix, patch_to_global returned
+        # Inf/NaN and global_to_patch returned a ≈ 0 for every finite r, so
+        # locate_point / interpolate_field were silently wrong on every
+        # compactified mesh (including make_compactified_shell_mesh).
+        for m in (make_compactified_shell_mesh(T, 1.0, 2; M_r = 3),
+                  make_radial_shell_mesh(T, 1.0, Inf, 2; M_r = 3),
+                  make_inflated_cube_mesh(T, 0.1, 0.3, Inf, 2))
+            @test any(isinf, m.vertex_coords)
+            for p in 1:npatches(m)
+                pd = m.patch_desc[p]
+                for _ in 1:25
+                    ξ = SVector{3, T}(rand() * 0.9, rand(), rand())  # ξ[1] < 1 ⇒ finite r
+                    x = patch_to_global(pd, ξ)
+                    @test all(isfinite, x)
+                    ξ2 = global_to_patch(pd, x)
+                    @test !isnan(ξ2[1])
+                    @test maximum(abs.(ξ2 .- ξ)) < 1.0e-10
+                end
+            end
+            # A known interior point is locatable (exercises global_to_patch
+            # across patches).
+            p0 = patch_to_global(m.patch_desc[1], SVector{3, T}(0.5, 0.4, 0.6))
+            e, _ = locate_point(m, p0)
+            @test e > 0
+        end
+    end
+
 end

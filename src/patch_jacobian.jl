@@ -271,6 +271,13 @@ end
     end
 end
 
+# Inverse of `_shell_radius`'s radius map: the parameter `a` for a given
+# radius `r`. Finite `R2` inverts the linear map `r = (1−a)·R1 + a·R2`;
+# `R2 = Inf` inverts the compactified map `r = R1/(1−a)`. Used by the Shell
+# branch of `global_to_patch` so point location works on compactified meshes.
+@inline _shell_radius_inv(R1::T, R2::T, r::T) where {T} =
+    isinf(R2) ? (one(T) - R1 / r) : (r - R1) / (R2 - R1)
+
 @inline function _ppj_shell_3d(ps::PatchShell{3, T},
                                  idx::NTuple{3, <:Integer},
                                  ξ::T, η::T, ζ::T) where {T}

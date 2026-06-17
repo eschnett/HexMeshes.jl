@@ -33,6 +33,9 @@ analog of [`make_radial_shell_mesh`](@ref).
 * No inner square: the inner circle `R1` is a boundary (the excision
   surface), not an interior interface.
 
+Passing `R2 = Inf` gives a **compactified** outer boundary (the shell maps
+its outer face to spatial infinity i⁰); `M_r` then defaults to `M`.
+
 Boundary-condition tagging (same convention as `make_radial_shell_mesh`):
 
 | kwarg value     | inner face (`bdry`) | outer face (`bdry`) |
@@ -68,9 +71,9 @@ function _annulus_skeleton(::Type{T}, R1::Real, R2::Real, M::Int;
     R1v = T(R1)
     R2v = T(R2)
     h   = (R2 - R1) / M
-    Mr  = M_r === nothing ?
-          max(1, round(Int, (R2 - R1) / h)) :
-          M_r
+    Mr  = M_r !== nothing ? M_r :
+          isinf(R2) ? M :                          # compactified: no finite extent
+          max(1, round(Int, (R2 - R1) / h))
     @assert Mr ≥ 1
 
     z = zero(T)

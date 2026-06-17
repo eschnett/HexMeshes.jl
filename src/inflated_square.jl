@@ -39,6 +39,10 @@ Build a 9-patch inflated square mesh of the disk `|x| ≤ R2`:
 `h = 2L/M`. `M_s` defaults to `round((R2 - R1) / h)`. Both clip to
 at least 1.
 
+Passing `R2 = Inf` gives a **compactified** outer boundary: the shell maps
+its outer face to spatial infinity i⁰ (`r(a) = R1/(1−a)`); `M_s` then
+defaults to `M` radial cells (the infinite domain has no `h`-derived scale).
+
 The outer boundary `r = R2` is tagged on every shell-patch outer face
 according to `outer_bc`:
 
@@ -84,9 +88,9 @@ function _inflated_square_skeleton(::Type{T}, L::Real, R1::Real, R2::Real,
     Mi = M_i === nothing ?
          max(1, round(Int, (R1f - (1 + sqrt(2.0))/2 * Lf) / hf)) :
          M_i
-    Ms = M_s === nothing ?
-         max(1, round(Int, (R2f - R1f) / hf)) :
-         M_s
+    Ms = M_s !== nothing ? M_s :
+         isinf(R2f) ? M :                          # compactified: no finite extent
+         max(1, round(Int, (R2f - R1f) / hf))
     @assert Mi ≥ 1
     @assert Ms ≥ 1
 

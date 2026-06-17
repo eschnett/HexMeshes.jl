@@ -24,87 +24,53 @@
 #     in two at `x = 0` to match the butterfly's seam, so the perimeter is
 #     6 segments (left 1, right 1, top 2, bottom 2).
 #
-# Interior face connectivity and the D₁ orientation of each interface are
-# discovered automatically by matching the physical endpoints of the
-# faces (`_two_hole_autowire!`): the only hand-specified links are the
-# domain boundaries (the two hole circles and the outer circle). The
-# resulting mesh is still purely combinatorial — the floating-point match
-# only selects each interface's discrete orientation flag at build time.
+# Interior face connectivity is fixed by the mesh TOPOLOGY — it does not
+# depend on the geometry parameters, the resolution, or the floating-point
+# precision — so it is stored as frozen integer tables (no floating-point
+# comparison anywhere in the build; the skeleton stays purely combinatorial,
+# which is what makes arbitrary distortion / precision safe). Each entry
+# `(p, f, q, g, o)` links face `f` of patch `p` to face `g` of patch `q` with
+# D₁ orientation `o ∈ {0, 1}`; the symmetric reverse link is set as well.
+#
+# The tables were generated once from an endpoint-matching pass and verified
+# identical across very different geometries and `R2 = Inf`; the conformity
+# (coordinate-consistency) and det-J tests pin them. They are tied to the
+# patch build order in `_two_hole_skeleton`: holes 1–8, then the butterfly
+# blocks, then 6 outer inflation + 6 shell as the last 12. Boundary faces
+# (the two hole circles and the outer circle) are set separately.
+# Face numbering: 1 = −x, 2 = +x, 3 = −y, 4 = +y.
 
-# Physical endpoints (tangent = 0 and tangent = Mt) of face `f` of a 2D
-# patch, plus the tangential element count `Mt`. Face numbering: 1=−x,
-# 2=+x, 3=−y, 4=+y.
-@inline function _face_endpoints_2d(pd::PatchDesc{2, T}, f::Int) where {T}
-    d = dims(pd)
-    if f == 1            # −x: idx[1] = 0, tangent along axis 2
-        i0 = (0, 0);      i1 = (0, d[2]);      mt = d[2]
-    elseif f == 2        # +x: idx[1] = d[1]
-        i0 = (d[1], 0);   i1 = (d[1], d[2]);   mt = d[2]
-    elseif f == 3        # −y: idx[2] = 0, tangent along axis 1
-        i0 = (0, 0);      i1 = (d[1], 0);      mt = d[1]
-    else                 # +y: idx[2] = d[2]
-        i0 = (0, d[2]);   i1 = (d[1], d[2]);   mt = d[1]
-    end
-    p0 = _patch_vertex_position(pd, i0)
-    p1 = _patch_vertex_position(pd, i1)
-    return (Float64(p0[1]), Float64(p0[2])), (Float64(p1[1]), Float64(p1[2])), mt
-end
+# :separated — 28 patches (8 butterfly blocks); 49 interior interfaces.
+const _TWO_HOLE_LINKS_SEPARATED = (
+    (1, 2, 15, 3, 1), (1, 3, 4, 4, 0), (1, 4, 3, 3, 0), (2, 2, 9, 3, 1),
+    (2, 3, 3, 4, 0), (2, 4, 4, 3, 0), (3, 2, 10, 3, 1), (4, 2, 11, 3, 1),
+    (5, 2, 12, 3, 1), (5, 3, 8, 4, 0), (5, 4, 7, 3, 0), (6, 2, 16, 3, 1),
+    (6, 3, 7, 4, 0), (6, 4, 8, 3, 0), (7, 2, 13, 3, 1), (8, 2, 14, 3, 1),
+    (9, 1, 11, 2, 0), (9, 2, 10, 1, 0), (9, 4, 17, 1, 1), (10, 2, 15, 1, 0),
+    (10, 4, 19, 1, 1), (11, 1, 15, 2, 0), (11, 4, 21, 1, 1), (12, 1, 13, 2, 0),
+    (12, 2, 14, 1, 0), (12, 4, 18, 1, 1), (13, 1, 16, 2, 0), (13, 4, 20, 1, 1),
+    (14, 2, 16, 1, 0), (14, 4, 22, 1, 1), (15, 4, 16, 4, 1), (17, 2, 23, 1, 0),
+    (17, 3, 19, 4, 0), (17, 4, 21, 3, 0), (18, 2, 24, 1, 0), (18, 3, 22, 4, 0),
+    (18, 4, 20, 3, 0), (19, 2, 25, 1, 0), (19, 3, 20, 4, 0), (20, 2, 26, 1, 0),
+    (21, 2, 27, 1, 0), (21, 4, 22, 3, 0), (22, 2, 28, 1, 0), (23, 3, 25, 4, 0),
+    (23, 4, 27, 3, 0), (24, 3, 28, 4, 0), (24, 4, 26, 3, 0), (25, 3, 26, 4, 0),
+    (27, 4, 28, 3, 0))
 
-# Wire every interior (non-boundary) face by matching face endpoints.
-# Each interior face has exactly one partner sharing both endpoints (with
-# matching tangential count); the orientation flag is 0 if the endpoints
-# correspond in order, 1 if reversed.
-function _two_hole_autowire!(faces::Matrix{FaceLink},
-                             patches::Vector{<:PatchDesc},
-                             boundary::Vector{Tuple{Int, Int}},
-                             tol::Float64)
-    n = length(patches)
-    isb = falses(4, n)
-    for (p, f) in boundary
-        isb[f, p] = true
-    end
-    # Cache endpoints / tangent counts of every non-boundary face.
-    e0 = Matrix{NTuple{2, Float64}}(undef, 4, n)
-    e1 = Matrix{NTuple{2, Float64}}(undef, 4, n)
-    mt = zeros(Int, 4, n)
-    for p in 1:n, f in 1:4
-        isb[f, p] && continue
-        a, b, m = _face_endpoints_2d(patches[p], f)
-        e0[f, p] = a;  e1[f, p] = b;  mt[f, p] = m
-    end
-    close(a, b) = abs(a[1] - b[1]) ≤ tol && abs(a[2] - b[2]) ≤ tol
-    wired = falses(4, n)
-    for p in 1:n, f in 1:4
-        (isb[f, p] || wired[f, p]) && continue
-        a0 = e0[f, p];  a1 = e1[f, p];  m = mt[f, p]
-        match_p = 0;  match_f = 0;  ori = 0;  nmatch = 0
-        for q in 1:n, g in 1:4
-            (q == p && g == f) && continue
-            (isb[g, q] || wired[g, q]) && continue
-            mt[g, q] == m || continue
-            b0 = e0[g, q];  b1 = e1[g, q]
-            if close(a0, b0) && close(a1, b1)
-                match_p = q;  match_f = g;  ori = 0;  nmatch += 1
-            elseif close(a0, b1) && close(a1, b0)
-                match_p = q;  match_f = g;  ori = 1;  nmatch += 1
-            end
-        end
-        nmatch == 1 ||
-            error("_two_hole_autowire!: face (patch=$p, face=$f) has " *
-                  "$(nmatch) matching neighbours (expected 1); endpoints " *
-                  "$(a0)..$(a1).")
-        faces[f, p]               = interior_link(match_p, match_f, ori)
-        faces[match_f, match_p]   = interior_link(p, f, ori)
-        wired[f, p]               = true
-        wired[match_f, match_p]   = true
-    end
-    # Every face must now be either a boundary or a wired interior link.
-    for p in 1:n, f in 1:4
-        @assert isb[f, p] || wired[f, p] "_two_hole_autowire!: face " *
-            "(patch=$p, face=$f) left unassigned."
-    end
-    return faces
-end
+# :touching — 26 patches (6 butterfly blocks; the hole squares meet at x = 0
+# and the two seam blocks are dropped); 45 interior interfaces.
+const _TWO_HOLE_LINKS_TOUCHING = (
+    (1, 2, 6, 2, 1), (1, 3, 4, 4, 0), (1, 4, 3, 3, 0), (2, 2, 9, 3, 1),
+    (2, 3, 3, 4, 0), (2, 4, 4, 3, 0), (3, 2, 10, 3, 1), (4, 2, 11, 3, 1),
+    (5, 2, 12, 3, 1), (5, 3, 8, 4, 0), (5, 4, 7, 3, 0), (6, 3, 7, 4, 0),
+    (6, 4, 8, 3, 0), (7, 2, 13, 3, 1), (8, 2, 14, 3, 1), (9, 1, 11, 2, 0),
+    (9, 2, 10, 1, 0), (9, 4, 15, 1, 1), (10, 2, 13, 1, 0), (10, 4, 17, 1, 1),
+    (11, 1, 14, 2, 0), (11, 4, 19, 1, 1), (12, 1, 13, 2, 0), (12, 2, 14, 1, 0),
+    (12, 4, 16, 1, 1), (13, 4, 18, 1, 1), (14, 4, 20, 1, 1), (15, 2, 21, 1, 0),
+    (15, 3, 17, 4, 0), (15, 4, 19, 3, 0), (16, 2, 22, 1, 0), (16, 3, 20, 4, 0),
+    (16, 4, 18, 3, 0), (17, 2, 23, 1, 0), (17, 3, 18, 4, 0), (18, 2, 24, 1, 0),
+    (19, 2, 25, 1, 0), (19, 4, 20, 3, 0), (20, 2, 26, 1, 0), (21, 3, 23, 4, 0),
+    (21, 4, 25, 3, 0), (22, 3, 26, 4, 0), (22, 4, 24, 3, 0), (23, 3, 24, 4, 0),
+    (25, 4, 26, 3, 0))
 
 """
     make_two_hole_mesh(::Type{T}, R1, R2, d, M; kwargs...) → Mesh{2, T}
@@ -125,6 +91,10 @@ Geometry knobs (all default from `R1, R2, d`; override as needed):
 * `A`     — big-square half-side. Default `2·(d/2 + L)`. Requires `A > d/2 + L`.
 * `R_mid` — inflation/shell interface radius. Default `1.5·√2·A`. Requires
   `√2·A < R_mid < R2`.
+
+Passing `R2 = Inf` gives a **compactified** outer boundary: the outer shell
+maps its outer face to spatial infinity i⁰ (`r(a) = R_mid/(1−a)`); `M_s`
+then defaults to `M` radial cells.
 
 Resolution: `M` is the number of cells along each hole-square edge (and so
 the tangential resolution everywhere). Radial counts `M_h` (hole
@@ -206,7 +176,9 @@ function _two_hole_skeleton(::Type{T}, R1::Real, R2::Real, d::Real, M::Int;
     Mh = M_h === nothing ? max(1, round(Int, (Lf - R1f) / hf)) : M_h
     Rb = M_b === nothing ? max(1, round(Int, (Af - (sf + Lf)) / hf)) : M_b
     Mi = M_i === nothing ? max(1, round(Int, (Rmf - (1 + sqrt(2.0)) / 2 * Af) / hf)) : M_i
-    Ms = M_s === nothing ? max(1, round(Int, (R2f - Rmf) / hf)) : M_s
+    Ms = M_s !== nothing ? M_s :
+         isinf(R2f) ? M :                          # compactified: no finite extent
+         max(1, round(Int, (R2f - Rmf) / hf))
     @assert Mh ≥ 1 && Rb ≥ 1 && Mi ≥ 1 && Ms ≥ 1
 
     sv  = T(sf);  Lv = T(Lf);  Av = T(Af);  Rmv = T(Rmf)
@@ -280,21 +252,24 @@ function _two_hole_skeleton(::Type{T}, R1::Real, R2::Real, d::Real, M::Int;
     end
     @assert length(patches) == (touching ? 26 : 28)
 
-    # --- Faces: boundaries explicit, interior auto-wired. ---------------
-    # Holes are always the first 8 patches; the 6 shells are always the
-    # last 6 (the butterfly count between them is 8 or 6 by mode).
+    # --- Faces. Boundaries are explicit; interior interfaces come from the
+    # frozen connectivity table for the mode — purely combinatorial, with no
+    # geometry / precision / `R2 = Inf` concerns. Holes are the first 8
+    # patches (face 1 = the circle); the 6 shells are the last 6 (face 2 =
+    # the outer circle, or i⁰ when compactified). -------------------------
     faces = Matrix{FaceLink}(undef, 4, length(patches))
-    boundary = Tuple{Int, Int}[]
-    for p in 1:8                       # hole circles (face 1 = a_lo = circle)
+    for p in 1:8
         faces[1, p] = boundary_link(inner_tag)
-        push!(boundary, (p, 1))
     end
-    for p in (length(patches) - 5):length(patches)   # outer circle (shell face 2 = R2)
+    for p in (length(patches) - 5):length(patches)
         faces[2, p] = boundary_link(outer_tag)
-        push!(boundary, (p, 2))
     end
-    autotol = 1e-9 * max(1.0, R2f)
-    _two_hole_autowire!(faces, patches, boundary, autotol)
+    links = touching ? _TWO_HOLE_LINKS_TOUCHING : _TWO_HOLE_LINKS_SEPARATED
+    @assert length(links) == (touching ? 45 : 49)
+    for (p, f, q, g, oo) in links
+        faces[f, p] = interior_link(q, g, Int8(oo))
+        faces[g, q] = interior_link(p, f, Int8(oo))
+    end
 
     return SkeletonMesh{2, T}(patches, faces)
 end

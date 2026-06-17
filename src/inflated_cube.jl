@@ -43,6 +43,10 @@ Build a 13-patch inflated cube mesh of the ball `|x| ≤ R2`:
 `h = 2L/M`. `M_s` defaults to `round((R2 - R1) / h)`. Each defaults to
 at least 1.
 
+Passing `R2 = Inf` gives a **compactified** outer boundary: the shell maps
+its outer face to spatial infinity i⁰ (`r(a) = R1/(1−a)`); `M_s` then
+defaults to `M` radial cells.
+
 The shell patches use `r(ρ) = (1 − ρ)·R1 + ρ·R2` along every radial
 ray, so they have exactly constant radial spacing `(R2 − R1) / M_s`
 and exactly uniform angular sampling in `(η, ζ) ∈ [-1, 1]²`. The
@@ -95,9 +99,9 @@ function _inflated_cube_skeleton(::Type{T}, L::Real, R1::Real, R2::Real, M::Int;
     Mi = M_i === nothing ?
          max(1, round(Int, (R1 - (1 + sqrt(3))/2 * L) / h)) :
          M_i
-    Ms = M_s === nothing ?
-         max(1, round(Int, (R2 - R1) / h)) :
-         M_s
+    Ms = M_s !== nothing ? M_s :
+         isinf(R2) ? M :                          # compactified: no finite extent
+         max(1, round(Int, (R2 - R1) / h))
     @assert Mi ≥ 1
     @assert Ms ≥ 1
 

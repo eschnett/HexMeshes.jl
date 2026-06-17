@@ -70,6 +70,11 @@ data dispatch.
 
 Defaults `outer_bc = :dirichlet`, `inner_bc = :excision` — the
 natural setup for BH evolutions.
+
+Passing `R2 = Inf` gives a **compactified** outer boundary (outer face at
+spatial infinity i⁰, `r(a) = R1/(1−a)`); `M_r` then defaults to `M`. This
+reproduces [`make_compactified_shell_mesh`](@ref), which remains as an
+explicit entry point.
 """
 function make_radial_shell_mesh(::Type{T}, R1::Real, R2::Real, M::Int;
                                   M_r::Union{Nothing, Int} = nothing,
@@ -93,9 +98,9 @@ function _radial_shell_skeleton(::Type{T}, R1::Real, R2::Real, M::Int;
     R1v = T(R1)
     R2v = T(R2)
     h   = (R2 - R1) / M
-    Mr  = M_r === nothing ?
-          max(1, round(Int, (R2 - R1) / h)) :
-          M_r
+    Mr  = M_r !== nothing ? M_r :
+          isinf(R2) ? M :                          # compactified: no finite extent
+          max(1, round(Int, (R2 - R1) / h))
     @assert Mr ≥ 1
 
     z = zero(T)
