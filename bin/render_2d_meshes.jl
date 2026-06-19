@@ -37,6 +37,27 @@ function plot_mesh!(ax, mesh::HexMeshes.Mesh{2, T}) where {T}
     return ax
 end
 
+# Draw the z = 0 cross-section of a 3D mesh: every element face whose four
+# vertices lie on the plane z = 0 (|z| < tol), projected to (x, y) and coloured
+# by `patch_id`. A z = 0 face layer exists when the z-resolution is even (pass
+# an even `M`). Faces shared across z = 0 are drawn from both sides (harmless).
+function plot_slice_z0!(ax, mesh::HexMeshes.Mesh{3, T}; tol = 1.0e-9) where {T}
+    vc = mesh.vertex_coords
+    vi = mesh.vertex_idx
+    pid = mesh.patch_id
+    # Gmsh hex faces → 4 local corner indices (±x, ±y, ±z).
+    faces = ((1, 4, 8, 5), (2, 3, 7, 6), (1, 2, 6, 5),
+             (4, 3, 7, 8), (1, 2, 3, 4), (5, 6, 7, 8))
+    for e in 1:mesh.Ne, fc in faces
+        vs = (vi[fc[1], e], vi[fc[2], e], vi[fc[3], e], vi[fc[4], e])
+        all(v -> abs(vc[3, v]) < tol, vs) || continue
+        pts = [Point2f(vc[1, v], vc[2, v]) for v in vs]
+        c = PATCH_COLORS[mod1(pid[e], length(PATCH_COLORS))]
+        poly!(ax, pts; color = c, strokecolor = (:black, 0.7), strokewidth = 0.6)
+    end
+    return ax
+end
+
 function render(out_dir::AbstractString = joinpath(@__DIR__, "..", "docs", "src", "figures");
                   fig_size = (480, 480))
     mkpath(out_dir)
@@ -110,6 +131,22 @@ function render(out_dir::AbstractString = joinpath(@__DIR__, "..", "docs", "src"
     plot_mesh!(ax_tt, mesh_tt)
     save(joinpath(out_dir, "mesh_two_hole_touching.png"), fig_tt)
 
-    println("wrote 5 PNGs to ", out_dir)
+    # ── two_ball z = 0 slices (3D) ────────────────────────────────
+    # Cross-section of the 3D ball-with-two-spherical-holes at z = 0 (even M
+    # so a face layer sits on the plane). Shows the two excised disks and the
+    # round outer boundary — the 3D analog of the two_hole figures.
+    for (mode, dd, tag) in ((:separated, 8.0, "separated"), (:touching, 4.0, "touching"))
+        mb = make_two_ball_mesh(T, T(1.0), T(16.0), T(dd), 4;
+                                A = T(6.0), R_mid = T(12.0),
+                                M_h = 2, M_b = 2, M_i = 2, M_s = 4, mode = mode)
+        fig = Figure(; size = fig_size)
+        ax  = Axis(fig[1, 1];
+                   title  = "make_two_ball_mesh z=0 slice (R1=1, R2=16, d=$(dd), :$(mode))",
+                   xlabel = "x", ylabel = "y", aspect = DataAspect())
+        plot_slice_z0!(ax, mb)
+        save(joinpath(out_dir, "mesh_two_ball_slice_$(tag).png"), fig)
+    end
+
+    println("wrote 7 PNGs to ", out_dir)
     return out_dir
 end

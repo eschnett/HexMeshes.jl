@@ -139,8 +139,10 @@ function _patch_vertex_position(pd::PatchDesc{D, T},
         return _vert_shell(pd.shell, idx)
     elseif k === WarpedCubic
         return _vert_warped_cubic(pd.warped_cubic, idx)
-    else  # BilinearQuad
+    elseif k === BilinearQuad
         return _vert_bilinear_quad(pd.bilinear_quad, idx)
+    else  # TrilinearHex
+        return _vert_trilinear_hex(pd.trilinear_hex, idx)
     end
 end
 
@@ -157,6 +159,28 @@ end
     w01 = (one(T) - ξ) * η
     return (w00 * c00[1] + w10 * c10[1] + w11 * c11[1] + w01 * c01[1],
             w00 * c00[2] + w10 * c10[2] + w11 * c11[2] + w01 * c01[2])
+end
+
+# TrilinearHex — D = 3. Trilinear interpolation of the eight Gmsh-ordered
+# corners at the 0-indexed grid vertex (idx[1], idx[2], idx[3]) ∈ 0..dims.
+# Same corner order / weights as `trilinear_shape`, so vertex positions agree
+# with the `trilinear_map` element path.
+@inline function _vert_trilinear_hex(h::PatchTrilinearHex{3, T},
+                                      idx::NTuple{3, <:Integer}) where {T}
+    ξ = T(idx[1]) / T(h.dims[1])
+    η = T(idx[2]) / T(h.dims[2])
+    ζ = T(idx[3]) / T(h.dims[3])
+    omξ = one(T) - ξ;  omη = one(T) - η;  omζ = one(T) - ζ
+    w = (omξ * omη * omζ, ξ * omη * omζ, ξ * η * omζ, omξ * η * omζ,
+         omξ * omη * ζ,   ξ * omη * ζ,   ξ * η * ζ,   omξ * η * ζ)
+    c = h.corners
+    return ntuple(Val(3)) do ax
+        s = zero(T)
+        @inbounds for v in 1:8
+            s += w[v] * c[v][ax]
+        end
+        return s
+    end
 end
 
 # WarpedCubic — works for any D. The 0-indexed `idx` lands at the

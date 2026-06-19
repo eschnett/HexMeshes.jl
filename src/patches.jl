@@ -53,6 +53,7 @@ the current builders.
     Shell        = 4
     WarpedCubic  = 5
     BilinearQuad = 6
+    TrilinearHex = 7
 end
 
 """
@@ -197,6 +198,26 @@ struct PatchBilinearQuad{D, T}
     corners :: NTuple{4, NTuple{D, T}}
 end
 
+"""
+    PatchTrilinearHex{D, T}
+
+General straight-sided hexahedron (D = 3) given by its eight corner points,
+with the trilinear / transfinite-interpolation map. `corners` are in
+Gmsh-canonical order (the same order the mesh stores element corners):
+`((−,−,−), (+,−,−), (+,+,−), (−,+,−), (−,−,+), (+,−,+), (+,+,+), (−,+,+))`, so
+ξ runs corner 1→2, η runs 1→4, ζ runs 1→5. `dims = (Mξ, Mη, Mζ)`.
+
+The 3D analog of [`PatchBilinearQuad`](@ref): a trilinear map restricted to
+any sub-box is again trilinear, so element position/Jacobian go through the
+existing `trilinear_map` / `trilinear_jacobian` corner path (no analytic-
+Jacobian branch needed). Used as the intermediate frustum blocks of
+`make_two_ball_mesh`.
+"""
+struct PatchTrilinearHex{D, T}
+    dims    :: NTuple{D, Int}
+    corners :: NTuple{8, NTuple{D, T}}
+end
+
 # Internal zero-initialised dummy patches used to fill the unused
 # variants of `PatchDesc`. Not exported.
 @inline _dummy_cubic(::Type{T}, ::Val{D}) where {T, D} =
@@ -224,6 +245,9 @@ end
 @inline _dummy_bilinear_quad(::Type{T}, ::Val{D}) where {T, D} =
     PatchBilinearQuad{D, T}(ntuple(_ -> 0, Val(D)),
                             ntuple(_ -> ntuple(_ -> zero(T), Val(D)), Val(4)))
+@inline _dummy_trilinear_hex(::Type{T}, ::Val{D}) where {T, D} =
+    PatchTrilinearHex{D, T}(ntuple(_ -> 0, Val(D)),
+                            ntuple(_ -> ntuple(_ -> zero(T), Val(D)), Val(8)))
 
 """
     PatchDesc{D, T}
@@ -260,6 +284,7 @@ struct PatchDesc{D, T}
     shell         :: PatchShell{D, T}
     warped_cubic  :: PatchWarpedCubic{D, T}
     bilinear_quad :: PatchBilinearQuad{D, T}
+    trilinear_hex :: PatchTrilinearHex{D, T}
 end
 
 PatchDesc(c::PatchCubic{D, T}) where {D, T} =
@@ -268,7 +293,8 @@ PatchDesc(c::PatchCubic{D, T}) where {D, T} =
                     _dummy_inflation(T, Val(D)),
                     _dummy_shell(T, Val(D)),
                     _dummy_warped_cubic(T, Val(D)),
-                    _dummy_bilinear_quad(T, Val(D)))
+                    _dummy_bilinear_quad(T, Val(D)),
+                    _dummy_trilinear_hex(T, Val(D)))
 
 PatchDesc(w::PatchWedge{D, T}) where {D, T} =
     PatchDesc{D, T}(Wedge,
@@ -276,7 +302,8 @@ PatchDesc(w::PatchWedge{D, T}) where {D, T} =
                     _dummy_inflation(T, Val(D)),
                     _dummy_shell(T, Val(D)),
                     _dummy_warped_cubic(T, Val(D)),
-                    _dummy_bilinear_quad(T, Val(D)))
+                    _dummy_bilinear_quad(T, Val(D)),
+                    _dummy_trilinear_hex(T, Val(D)))
 
 PatchDesc(i::PatchInflation{D, T}) where {D, T} =
     PatchDesc{D, T}(Inflation,
@@ -285,7 +312,8 @@ PatchDesc(i::PatchInflation{D, T}) where {D, T} =
                     i,
                     _dummy_shell(T, Val(D)),
                     _dummy_warped_cubic(T, Val(D)),
-                    _dummy_bilinear_quad(T, Val(D)))
+                    _dummy_bilinear_quad(T, Val(D)),
+                    _dummy_trilinear_hex(T, Val(D)))
 
 PatchDesc(s::PatchShell{D, T}) where {D, T} =
     PatchDesc{D, T}(Shell,
@@ -294,7 +322,8 @@ PatchDesc(s::PatchShell{D, T}) where {D, T} =
                     _dummy_inflation(T, Val(D)),
                     s,
                     _dummy_warped_cubic(T, Val(D)),
-                    _dummy_bilinear_quad(T, Val(D)))
+                    _dummy_bilinear_quad(T, Val(D)),
+                    _dummy_trilinear_hex(T, Val(D)))
 
 PatchDesc(wc::PatchWarpedCubic{D, T}) where {D, T} =
     PatchDesc{D, T}(WarpedCubic,
@@ -303,7 +332,8 @@ PatchDesc(wc::PatchWarpedCubic{D, T}) where {D, T} =
                     _dummy_inflation(T, Val(D)),
                     _dummy_shell(T, Val(D)),
                     wc,
-                    _dummy_bilinear_quad(T, Val(D)))
+                    _dummy_bilinear_quad(T, Val(D)),
+                    _dummy_trilinear_hex(T, Val(D)))
 
 PatchDesc(bq::PatchBilinearQuad{D, T}) where {D, T} =
     PatchDesc{D, T}(BilinearQuad,
@@ -312,7 +342,18 @@ PatchDesc(bq::PatchBilinearQuad{D, T}) where {D, T} =
                     _dummy_inflation(T, Val(D)),
                     _dummy_shell(T, Val(D)),
                     _dummy_warped_cubic(T, Val(D)),
-                    bq)
+                    bq,
+                    _dummy_trilinear_hex(T, Val(D)))
+
+PatchDesc(th::PatchTrilinearHex{D, T}) where {D, T} =
+    PatchDesc{D, T}(TrilinearHex,
+                    _dummy_cubic(T, Val(D)),
+                    _dummy_wedge(T, Val(D)),
+                    _dummy_inflation(T, Val(D)),
+                    _dummy_shell(T, Val(D)),
+                    _dummy_warped_cubic(T, Val(D)),
+                    _dummy_bilinear_quad(T, Val(D)),
+                    th)
 
 """
     dims(pd::PatchDesc{D, T}) → NTuple{D, Int}
@@ -328,7 +369,8 @@ active variant.
            k === Inflation    ? pd.inflation.dims     :
            k === Shell        ? pd.shell.dims         :
            k === WarpedCubic  ? pd.warped_cubic.dims  :
-                                pd.bilinear_quad.dims
+           k === BilinearQuad ? pd.bilinear_quad.dims :
+                                pd.trilinear_hex.dims
 end
 
 """

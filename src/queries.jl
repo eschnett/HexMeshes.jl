@@ -245,9 +245,22 @@ function patch_to_global(pd::PatchDesc{3, T}, ξ::SVector{3, T}) where {T}
             wc.x_lo[3] + (wc.x_hi[3] - wc.x_lo[3]) * ξ[3])
         P, _ = _warp_point_and_jac(wc, q)
         return P
+    elseif k === TrilinearHex
+        P, _ = _trilinear_hex_point_and_jac(pd.trilinear_hex, ξ[1], ξ[2], ξ[3])
+        return P
     else
         error("patch_to_global: unsupported patch kind $k")
     end
+end
+
+# Position + Jacobian of a TrilinearHex patch map at (ξ, η, ζ), via the
+# shared `trilinear_map`/`trilinear_jacobian` corner path (the stored corners
+# are NTuples; lift them to SVectors). Used by both `patch_to_global` and the
+# Newton `global_to_patch` below.
+@inline function _trilinear_hex_point_and_jac(h::PatchTrilinearHex{3, T},
+                                               ξ::T, η::T, ζ::T) where {T}
+    verts = ntuple(v -> SVector{3, T}(h.corners[v]), Val(8))
+    return trilinear_map(verts, ξ, η, ζ), trilinear_jacobian(verts, ξ, η, ζ)
 end
 
 # Mesh-level convenience overload. **Deprecated** — pass the PatchDesc
@@ -372,6 +385,32 @@ function global_to_patch(pd::PatchDesc{3, T}, p::SVector{3, T};
             return SVector{3, T}(clamp(ξ_a, zero(T), one(T)),
                                   clamp(ξ_b, zero(T), one(T)),
                                   clamp(ξ_c, zero(T), one(T)))
+        end
+        return NaN_ξ
+    elseif k === TrilinearHex
+        # No closed form for a general trilinear map; Newton on the forward
+        # map seeded from the patch centre (the straight-sided frustum blocks
+        # of make_two_ball_mesh are well-behaved, so this converges fast).
+        h = pd.trilinear_hex
+        ξv = SVector{3, T}(one(T) / 2, one(T) / 2, one(T) / 2)
+        res = T(Inf)
+        res_floor = 8 * eps(T) * max(one(T), abs(p[1]), abs(p[2]), abs(p[3]))
+        for _ in 1:40
+            x, J = _trilinear_hex_point_and_jac(h, ξv[1], ξv[2], ξv[3])
+            r = x - p
+            res = sqrt(r[1]^2 + r[2]^2 + r[3]^2)
+            res ≤ res_floor && break
+            d = det(J)
+            (isfinite(d) && abs(d) > eps(T)) || return NaN_ξ
+            ξv = ξv - (J \ r)
+        end
+        res ≤ tol || return NaN_ξ
+        if -tol ≤ ξv[1] ≤ one(T) + tol &&
+           -tol ≤ ξv[2] ≤ one(T) + tol &&
+           -tol ≤ ξv[3] ≤ one(T) + tol
+            return SVector{3, T}(clamp(ξv[1], zero(T), one(T)),
+                                  clamp(ξv[2], zero(T), one(T)),
+                                  clamp(ξv[3], zero(T), one(T)))
         end
         return NaN_ξ
     else
@@ -506,7 +545,11 @@ from [`tensor_interp_grad`](@ref) to physical gradients.
 function element_point_and_jac(mesh::Mesh{3, T}, e::Integer,
                                ξ::SVector{3, T}) where {T}
     pd = mesh.patch_desc[mesh.patch_id[e]]
-    if pd.kind === Cubic
+    # Cubic and TrilinearHex share the corner-trilinear path: trilinear
+    # interpolation of an element's 8 corner vertices exactly reproduces the
+    # patch map inside that element (a trilinear map restricted to a sub-box
+    # is trilinear), so no analytic-Jacobian branch is needed.
+    if pd.kind === Cubic || pd.kind === TrilinearHex
         verts = element_vertices(mesh, e)
         return trilinear_map(verts, ξ[1], ξ[2], ξ[3]),
                trilinear_jacobian(verts, ξ[1], ξ[2], ξ[3])

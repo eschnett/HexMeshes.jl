@@ -536,4 +536,121 @@ count_zero_neighbours(m::Mesh{3}) = count(==(0), m.conn.neighbour)
         end
     end
 
+    @testset "make_two_ball_mesh: shape, kinds, conformity, det J" begin
+        R1 = 1.0; R2 = 40.0; d = 10.0; s = d / 2
+        for (mode, npat) in ((:separated, 44), (:touching, 42))
+            dd = mode === :touching ? 4.0 : d
+            m = make_two_ball_mesh(Float64, R1, R2, dd, 3;
+                                   A = 8.0, R_mid = 16.0,
+                                   M_h = 2, M_b = 2, M_i = 2, M_s = 2, mode = mode)
+            @test m isa Mesh{3, Float64}
+            @test npatches(m) == npat
+            @test m.Ne == length(m.patch_id)
+            # Patch kinds: 12 hole Inflation, (12|10) TrilinearHex frustums,
+            # 10 outer Inflation, 10 Shell.
+            nfr = mode === :touching ? 10 : 12
+            kinds = [pd.kind for pd in m.patch_desc]
+            @test kinds == [fill(Inflation, 12); fill(TrilinearHex, nfr);
+                            fill(Inflation, 10); fill(Shell, 10)]
+            @test nv(m) < 8 * m.Ne
+
+            # Neighbour symmetry (D₄).
+            for e in 1:m.Ne, f in 1:6
+                n = m.conn.neighbour[f, e]
+                n == 0 && continue
+                @test m.conn.neighbour[m.conn.neighbour_face[f, e], n] == e
+            end
+
+            # Conformity (analytic map == deduped vertices — pins the frozen
+            # tables, incl. the touching seam's extraordinary edges) and
+            # positive orientation everywhere.
+            maxc = 0.0
+            for e in 1:m.Ne
+                pd = m.patch_desc[m.patch_id[e]]
+                de = dims(pd)
+                cidx = (Int(m.patch_idx[1, e]), Int(m.patch_idx[2, e]), Int(m.patch_idx[3, e]))
+                corners = ((0,0,0),(1,0,0),(1,1,0),(0,1,0),(0,0,1),(1,0,1),(1,1,1),(0,1,1))
+                for (c, off) in enumerate(corners)
+                    ξ = SVector{3, Float64}((cidx[1]-1+off[1])/de[1],
+                                            (cidx[2]-1+off[2])/de[2],
+                                            (cidx[3]-1+off[3])/de[3])
+                    P = patch_to_global(pd, ξ)
+                    vid = m.vertex_idx[c, e]
+                    maxc = max(maxc, abs(P[1]-m.vertex_coords[1,vid]),
+                                     abs(P[2]-m.vertex_coords[2,vid]),
+                                     abs(P[3]-m.vertex_coords[3,vid]))
+                end
+                _, J = element_point_and_jac(m, e, SVector(0.3, 0.4, 0.6))
+                @test det(J) > 0
+            end
+            @test maxc ≤ 1.0e-12
+        end
+    end
+
+    @testset "make_two_ball_mesh: hole spheres, outer sphere, round-trip" begin
+        R1 = 1.0; R2 = 40.0; d = 10.0; s = d / 2
+        m = make_two_ball_mesh(Float64, R1, R2, d, 3;
+                               A = 8.0, R_mid = 16.0, M_h = 2, M_b = 2, M_i = 2, M_s = 2)
+        # face → its 4 local corner indices (gmsh hex), for ±x..±z.
+        fc = ((1,4,8,5), (2,3,7,6), (1,2,6,5), (4,3,7,8), (1,2,3,4), (5,6,7,8))
+        n_in = 0; n_out = 0; maxr = 0.0
+        for e in 1:m.Ne, f in 1:6
+            m.conn.neighbour[f, e] == 0 || continue
+            tag = m.conn.bdry[f, e]
+            for vl in fc[f]
+                v = m.vertex_idx[vl, e]
+                x, y, zz = m.vertex_coords[1, v], m.vertex_coords[2, v], m.vertex_coords[3, v]
+                maxr = max(maxr, sqrt(x^2 + y^2 + zz^2))
+                if tag == 8        # excision: on one of the two hole spheres
+                    @test min(sqrt((x-s)^2+y^2+zz^2), sqrt((x+s)^2+y^2+zz^2)) ≈ R1 atol = 1.0e-10
+                elseif tag == 1    # outer sphere |x| = R2
+                    @test sqrt(x^2 + y^2 + zz^2) ≈ R2 atol = 1.0e-9
+                end
+            end
+            tag == 8 && (n_in += 1);  tag == 1 && (n_out += 1)
+        end
+        @test n_in > 0 && n_out > 0
+        @test maxr ≤ R2 + 1.0e-9
+        # Round-trip over all patches (TrilinearHex Newton + off-centre reversed inflation).
+        for p in 1:npatches(m)
+            pd = m.patch_desc[p]
+            for _ in 1:10
+                ξ = SVector{3, Float64}(rand(), rand(), rand())
+                x = patch_to_global(pd, ξ)
+                ξ2 = global_to_patch(pd, x)
+                @test !isnan(ξ2[1])
+                @test maximum(abs.(ξ2 .- ξ)) < 1.0e-9
+            end
+        end
+    end
+
+    @testset "make_two_ball_mesh: compactified, precision, errors" begin
+        # Compactified (R2 = Inf): i⁰ vertices at infinity; finite interior maps.
+        mc = make_two_ball_mesh(Float64, 1.0, Inf, 10.0, 3;
+                                A = 8.0, R_mid = 16.0, M_h = 2, M_b = 2, M_i = 2, M_s = 2)
+        @test npatches(mc) == 44
+        @test any(isinf, mc.vertex_coords)
+        for e in 1:mc.Ne
+            _, J = element_point_and_jac(mc, e, SVector(0.3, 0.4, 0.6))
+            @test det(J) > 0
+        end
+        # Float32 builds with positive orientation (frozen tables are precision-
+        # independent — no floating-point comparison in the builder).
+        for mode in (:separated, :touching)
+            mf = make_two_ball_mesh(Float32, 1.0f0, 100.0f0, mode === :touching ? 4.0f0 : 10.0f0, 3; mode)
+            @test mf isa Mesh{3, Float32}
+            for e in 1:mf.Ne
+                _, J = element_point_and_jac(mf, e, SVector{3, Float32}(0.4f0, 0.55f0, 0.45f0))
+                @test det(J) > 0
+            end
+        end
+        # Error cases.
+        @test_throws ErrorException make_two_ball_mesh(Float64, 1.0, 40.0, 4.0, 3;
+                                                       L = 1.5, A = 8.0, R_mid = 16.0, mode = :touching)
+        @test_throws AssertionError make_two_ball_mesh(Float64, 1.0, 40.0, 1.5, 3;
+                                                       A = 8.0, R_mid = 16.0, mode = :touching)
+        @test_throws ErrorException make_two_ball_mesh(Float64, 1.0, 40.0, 10.0, 3;
+                                                       A = 8.0, R_mid = 16.0, mode = :bogus)
+    end
+
 end
