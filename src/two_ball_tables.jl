@@ -1,10 +1,9 @@
 # Frozen interior connectivity for `make_two_ball_mesh` — GENERATED, do not edit
-# by hand. Produced once by the `_two_ball_autowire` scaffold in `two_ball.jl`
-# and verified geometry-, precision-, and R2-independent; pinned by the
-# coordinate-consistency and det-J tests. Each entry `(p, f, q, g, o)`: face `f`
-# of patch `p` links to face `g` of patch `q` with D₄ orientation `o`. Tied to
-# the patch build order in `_two_ball_patches`. Stored as Vectors (not giant
-# tuples) to keep load/compile times sane.
+# by hand. Regenerate with `julia --project=. dev/gen_two_ball_tables.jl`. Each
+# entry `(p, f, q, g, o)`: face `f` of patch `p` links to face `g` of patch `q`
+# with D₄ orientation `o`. Two directed entries per pair (D₄ is not self-
+# inverse). Tied to the patch build order in `_two_ball_patches`. Stored as
+# Vectors (not giant tuples) to keep load/compile times sane.
 
 const _TWO_BALL_LINKS_SEPARATED = NTuple{5, Int}[
     (1,2,14,5,0), (14,5,1,2,0), (1,3,4,4,0), (4,4,1,3,0), (1,4,3,6,0), (3,6,1,4,0), (1,5,6,6,0), (6,6,1,5,0),
